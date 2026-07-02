@@ -1,0 +1,16 @@
+{
+  "neverRunChecks": true,
+  "blockedCommands": [
+    "npm run check",
+    "npm run lint",
+    "npm run build",
+    "svelte-check",
+    "vite build",
+    "wrangler dev",
+    "npm run typecheck"
+  ],
+  "allowedVerification": [
+    "single-file test run",
+    "minimal-scope verification"
+  ]
+}

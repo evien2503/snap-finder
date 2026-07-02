@@ -1,0 +1,2 @@
+# OpenCode skills are self-contained — nothing to ignore by default.
+# If plugin deps are needed, ensure package.json is NOT ignored here.
