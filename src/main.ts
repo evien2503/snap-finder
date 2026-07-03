@@ -98,6 +98,10 @@ let isListening = false
 let showResultPopup = false
 let resultItem: Item | null = null
 let redirectNotice = ''
+let showMobileMap = false
+let cameraStream: MediaStream | null = null
+let dismissAlerts: string[] = []
+let cameraError = ''
 
 function storageKey(user: string): string {
   return `ilf_data_${user}`
@@ -294,6 +298,15 @@ function getConfidence(iso: string): { level: 'high' | 'medium' | 'low' | 'stale
   return { level: 'stale', label: 'Stale Data - Rescan Needed' }
 }
 
+function getConfidencePercent(iso: string): number {
+  if (!isValidDate(iso)) return 0
+  const diff = Date.now() - new Date(iso).getTime()
+  const hours = diff / 3600000
+  if (hours < 1) return 100
+  if (hours > 336) return 5
+  return Math.round(100 - (hours / 336) * 95)
+}
+
 function staleItems(): Item[] {
   const cutoff = Date.now() - 3 * 24 * 3600000
   return items.filter(i => isValidDate(i.lastConfirmed) && new Date(i.lastConfirmed).getTime() < cutoff)
@@ -410,9 +423,32 @@ function dismissResultPopup() {
   render()
 }
 
+function startCamera() {
+  if (cameraStream) return
+  cameraError = ''
+  navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } } })
+    .then(stream => {
+      cameraStream = stream
+      const video = document.getElementById('scan-video') as HTMLVideoElement
+      if (video) { video.srcObject = stream; video.play() }
+    })
+    .catch(() => {
+      cameraError = 'Camera access denied or unavailable. Using simulated scan.'
+      render()
+    })
+}
+
+function stopCamera() {
+  if (cameraStream) {
+    cameraStream.getTracks().forEach(t => t.stop())
+    cameraStream = null
+  }
+}
+
 function runScan() {
   scanning = true
-  scanLog = ['📸 Initializing camera...', '🔍 Scanning room...']
+  stopCamera()
+  scanLog = ['📸 Initializing camera...', '🔍 Scanning room via AI vision...']
   render()
   const room = currentRoom()
   const avZones = room.zones
@@ -454,6 +490,20 @@ function runScan() {
       setTimeout(() => { showConfetti = false; render() }, 1500)
     }
   }, 800)
+}
+
+function confirmItemMoved(itemId: string) {
+  const item = items.find(i => i.id === itemId)
+  if (item) {
+    item.lastConfirmed = new Date().toISOString()
+    saveData()
+    render()
+  }
+}
+
+function dismissAlertItem(itemId: string) {
+  dismissAlerts.push(itemId)
+  render()
 }
 
 function render() {
@@ -518,6 +568,7 @@ function renderDashboard(app: HTMLDivElement) {
           <h1>📍 Item Location Finder</h1>
           <div class="header-actions">
             <span class="user-badge">${escapeHtml(currentUser?.email || '')}</span>
+            <button id="map-toggle" class="btn-icon mob-only" title="View Map">🗺️</button>
             <button id="dark-btn" class="btn-icon" title="Toggle dark mode">${darkMode ? '☀️' : '🌙'}</button>
             <button id="scan-btn" class="btn-scan ${scanning ? 'scanning' : ''}">📸 Scan Room</button>
             <button id="add-btn" class="btn-primary">+ Add Item</button>
@@ -527,8 +578,20 @@ function renderDashboard(app: HTMLDivElement) {
         ${stale.length > 0 ? `
           <div class="alert-banner">
             <span class="alert-icon">🔔</span>
-            <span>${stale.length} item${stale.length > 1 ? 's' : ''} haven't been seen in 3+ days.</span>
-            <button id="dismiss-alerts" class="alert-dismiss">✕</button>
+            <div class="alert-body">
+              <span class="alert-summary">${stale.length} item${stale.length > 1 ? 's' : ''} haven't been seen in 3+ days.</span>
+              ${stale.filter(i => !dismissAlerts.includes(i.id)).slice(0, 3).map(i => `
+                <div class="alert-item">
+                  <span>${pinIcon(i.name)} <strong>${escapeHtml(i.name)}</strong> — last seen ${escapeHtml(timeAgo(i.lastConfirmed))} in ${escapeHtml(i.location)}</span>
+                  <div class="alert-item-actions">
+                    <button class="alert-confirm" data-confirm-id="${i.id}">✓ Still there</button>
+                    <button class="alert-snooze" data-snooze-id="${i.id}">✕ Dismiss</button>
+                  </div>
+                </div>
+              `).join('')}
+              ${stale.length > 3 ? `<div class="alert-more">+${stale.length - 3} more stale items</div>` : ''}
+            </div>
+            <button id="dismiss-alerts" class="alert-dismiss" title="Dismiss all">✕</button>
           </div>` : ''}
         <div class="search-bar">
           <input type="text" id="search" placeholder="Search items..." value="${escapeHtml(searchQuery)}" />
@@ -618,6 +681,7 @@ function renderDashboard(app: HTMLDivElement) {
                     <div class="confidence-badge ${conf.level}">
                       ${conf.level === 'high' ? '🟢' : conf.level === 'medium' ? '🟡' : '🔴'}
                       ${conf.level === 'stale' ? escapeHtml(conf.label) : `${escapeHtml(conf.label)} ${escapeHtml(timeAgo(item.lastConfirmed))}`}
+                      <span class="conf-pct">${getConfidencePercent(item.lastConfirmed)}%</span>
                     </div>
                   </div>
                   <div class="card-actions">
@@ -665,13 +729,17 @@ function renderDashboard(app: HTMLDivElement) {
                 <div class="room-label">Drag zones to rearrange</div>
                 ${room.zones.map(zone => {
                   const zoned = allRoomItems.filter(i => Math.abs(i.zoneX - zone.x) < 15 && Math.abs(i.zoneY - zone.y) < 15)
+                  const hasGlowing = zoned.some(i => i.id === glowingItemId)
+                  const zoneCats = [...new Set(zoned.map(i => i.category))]
+                  const zoneColor = zoneCats.length === 1 ? pinColor(zoneCats[0]) : null
                   return `
-                    <div class="map-zone drag-zone ${selectedZone === zone.id ? 'active' : ''}"
+                    <div class="map-zone drag-zone ${selectedZone === zone.id ? 'active' : ''} ${hasGlowing ? 'zone-glow' : ''}"
                          data-zone="${zone.id}"
                          data-room-id="${room.id}"
-                         style="left: ${zone.x}%; top: ${zone.y}%;">
+                         style="left: ${zone.x}%; top: ${zone.y}%; ${zoneColor ? `border-color: ${zoneColor}; background: ${zoneColor}15;` : ''}">
                       <span class="zone-drag-handle">⠿</span>
                       <span class="zone-label">${escapeHtml(zone.label)}</span>
+                      ${zoned.length > 0 ? `<span class="zone-count">${zoned.length}</span>` : ''}
                       ${zoned.map(i => `
                         <div class="map-pin ${glowingItemId === i.id ? 'pulse-glow glow' : ''}"
                              data-item-id="${i.id}" data-pin-for="${i.id}"
@@ -696,6 +764,40 @@ function renderDashboard(app: HTMLDivElement) {
           </div>
         </div>
       </div>
+
+      ${showMobileMap ? `
+        <div class="mobile-map-overlay" id="mobile-map-overlay">
+          <div class="mobile-map-header">
+            <h3>🗺️ ${escapeHtml(room.name)}</h3>
+            <button id="close-mobile-map" class="btn-back">✕</button>
+          </div>
+          <div class="mobile-map-body">
+            <div class="room-border" id="room-border-mobile">
+              <div class="room-label">Drag zones to rearrange</div>
+              ${room.zones.map(zone => {
+                const zoned = allRoomItems.filter(i => Math.abs(i.zoneX - zone.x) < 15 && Math.abs(i.zoneY - zone.y) < 15)
+                return `
+                  <div class="map-zone drag-zone ${selectedZone === zone.id ? 'active' : ''}"
+                       data-zone="${zone.id}" data-room-id="${room.id}"
+                       style="left: ${zone.x}%; top: ${zone.y}%;">
+                    <span class="zone-drag-handle">⠿</span>
+                    <span class="zone-label">${escapeHtml(zone.label)}</span>
+                    ${zoned.map(i => `
+                      <div class="map-pin ${glowingItemId === i.id ? 'pulse-glow glow' : ''}"
+                           data-item-id="${i.id}" data-pin-for="${i.id}"
+                           style="background: ${pinColor(i.category)}">${pinIcon(i.name)}</div>
+                    `).join('')}
+                  </div>`
+              }).join('')}
+            </div>
+          </div>
+        </div>
+      ` : ''}
+
+      <div class="mobile-bottom-bar">
+        <button id="mob-scan-btn" class="bottom-scan-btn">📸 Scan Room</button>
+        <button id="mob-mic-btn" class="bottom-icon-btn ${isListening ? 'listening' : ''}">${isListening ? '🔴' : '🎤'}</button>
+      </div>
     </div>`
 
   document.getElementById('dark-btn')!.addEventListener('click', toggleDarkMode)
@@ -703,8 +805,17 @@ function renderDashboard(app: HTMLDivElement) {
   document.getElementById('add-btn')!.addEventListener('click', () => { showAddModal = true; showScanModal = false; editingItem = null; render() })
   document.getElementById('signout-btn')!.addEventListener('click', signOut)
 
+  const mapToggleBtn = document.getElementById('map-toggle')
+  if (mapToggleBtn) mapToggleBtn.addEventListener('click', () => { showMobileMap = true; render() })
+  const closeMobileMap = document.getElementById('close-mobile-map')
+  if (closeMobileMap) closeMobileMap.addEventListener('click', () => { showMobileMap = false; render() })
+
   const micBtn = document.getElementById('mic-btn')
   if (micBtn) micBtn.addEventListener('click', startVoiceSearch)
+  const mobMicBtn = document.getElementById('mob-mic-btn')
+  if (mobMicBtn) mobMicBtn.addEventListener('click', startVoiceSearch)
+  const mobScanBtn = document.getElementById('mob-scan-btn')
+  if (mobScanBtn) mobScanBtn.addEventListener('click', () => { showScanModal = true; showAddModal = false; render() })
 
   const search = document.getElementById('search') as HTMLInputElement
   search.addEventListener('input', () => {
@@ -830,17 +941,21 @@ function renderScanModal(): string {
           <button id="close-scan" class="btn-back">✕</button>
         </div>
         <div class="scan-preview">
-          <div class="scan-viewfinder ${scanning ? 'active' : ''}">
+          <div class="scan-viewfinder ${cameraStream ? 'camera-live' : ''} ${scanning ? 'active' : ''}">
+            <video id="scan-video" class="scan-video" autoplay playsinline></video>
             <div class="scan-frame"></div>
-            ${!scanning ? '<div class="scan-idle">Point camera at your room</div>' : ''}
+            ${!cameraStream && !scanning ? '<div class="scan-idle">Point camera at your room</div>' : ''}
+            ${cameraError ? `<div class="scan-error">${escapeHtml(cameraError)}</div>` : ''}
           </div>
         </div>
         <div class="scan-log">
-          ${scanLog.length === 0 ? '<div class="scan-hint">Click "Start Scan" to detect items</div>'
+          ${scanLog.length === 0 ? '<div class="scan-hint">Click "Open Camera" then "Start Scan" to detect items</div>'
             : scanLog.map(line => `<div class="log-line">${line}</div>`).join('')}
         </div>
         <div class="scan-actions">
-          ${!scanning ? '<button id="start-scan" class="btn-scan">📸 Start Scan</button>' : ''}
+          ${!scanning && !cameraStream ? '<button id="open-camera" class="btn-primary">📷 Open Camera</button>' : ''}
+          ${!scanning && cameraStream ? '<button id="start-scan" class="btn-scan">📸 Start Scan</button>' : ''}
+          ${cameraStream && !scanning ? '<button id="close-camera" class="btn-secondary">✕ Close Camera</button>' : ''}
           ${scanning ? '<button class="btn-secondary" disabled>⏳ Scanning...</button>' : ''}
         </div>
       </div>
@@ -909,12 +1024,23 @@ function escapeHtml(str: string): string {
 document.addEventListener('click', (e) => {
   const t = e.target as HTMLElement
   if (t.closest('#close-scan') || (t.closest('.modal-overlay') && t.closest('#scan-modal') === t)) {
-    showScanModal = false; scanning = false; render()
+    showScanModal = false; scanning = false; stopCamera(); cameraStream = null; cameraError = ''; render()
   }
   if (t.closest('#close-add') || (t.closest('.modal-overlay') && t.closest('#add-modal') === t)) {
     showAddModal = false; editingItem = null; render()
   }
+  if (t.closest('#open-camera')) { startCamera(); render() }
+  if (t.closest('#close-camera')) { stopCamera(); cameraStream = null; cameraError = ''; render() }
   if (t.closest('#start-scan')) runScan()
+  if (t.closest('#mobile-map-overlay') && t.closest('.mobile-map-header') === null && t.closest('.room-border') === null) { showMobileMap = false; render() }
+  if (t.closest('.alert-confirm')) {
+    const id = (t.closest('.alert-confirm') as HTMLElement).dataset.confirmId
+    if (id) confirmItemMoved(id)
+  }
+  if (t.closest('.alert-snooze')) {
+    const id = (t.closest('.alert-snooze') as HTMLElement).dataset.snoozeId
+    if (id) dismissAlertItem(id)
+  }
   if (t.closest('#mini-map')) {
     const map = document.getElementById('mini-map')
     if (!map) return
