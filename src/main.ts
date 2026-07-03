@@ -69,6 +69,14 @@ const DEFAULT_ROOMS: Room[] = [
   },
 ]
 
+const SAMPLE_ITEMS: Array<{ name: string; location: string; category: string; roomId: string; zoneX: number; zoneY: number }> = [
+  { name: 'Passport', location: 'Desk Drawer', category: 'Documents', roomId: 'room_living', zoneX: 20, zoneY: 25 },
+  { name: 'Laptop', location: 'Desk', category: 'Electronics', roomId: 'room_living', zoneX: 20, zoneY: 23 },
+  { name: 'House Keys', location: 'Nightstand', category: 'Keys', roomId: 'room_bedroom', zoneX: 82, zoneY: 35 },
+  { name: 'Warranty Card', location: 'Cabinet Shelf', category: 'Warranties', roomId: 'room_living', zoneX: 72, zoneY: 66 },
+  { name: 'Spare Phone Charger', location: 'Bedroom Dresser', category: 'Electronics', roomId: 'room_bedroom', zoneX: 22, zoneY: 66 },
+]
+
 let currentUser: User | null = null
 let currentPage: 'auth' | 'dashboard' = 'auth'
 let items: Item[] = []
@@ -84,18 +92,39 @@ let glowingItemId: string | null = null
 let rooms: Room[] = []
 let currentRoomId: string = ''
 let draggingZone: { roomId: string; zoneId: string } | null = null
+let darkMode = false
+let showConfetti = false
+let isListening = false
+let showResultPopup = false
+let resultItem: Item | null = null
+let redirectNotice = ''
 
 function storageKey(user: string): string {
   return `ilf_data_${user}`
+}
+
+function seedSampleData() {
+  rooms = JSON.parse(JSON.stringify(DEFAULT_ROOMS))
+  items = SAMPLE_ITEMS.map(s => ({
+    id: crypto.randomUUID().slice(0, 8),
+    name: s.name,
+    location: s.location,
+    category: s.category,
+    roomId: s.roomId,
+    createdAt: formatDate(new Date()),
+    lastConfirmed: new Date(Date.now() - Math.random() * 86400000).toISOString(),
+    zoneX: s.zoneX,
+    zoneY: s.zoneY,
+  }))
+  currentRoomId = rooms[0].id
 }
 
 function loadData() {
   if (!currentUser) return
   const raw = localStorage.getItem(storageKey(currentUser.email))
   if (!raw) {
-    rooms = JSON.parse(JSON.stringify(DEFAULT_ROOMS))
-    items = []
-    currentRoomId = rooms[0].id
+    seedSampleData()
+    saveData()
     return
   }
   try {
@@ -107,10 +136,21 @@ function loadData() {
     }))
     currentRoomId = data.currentRoomId || rooms[0]?.id || ''
   } catch {
-    rooms = JSON.parse(JSON.stringify(DEFAULT_ROOMS))
-    items = []
-    currentRoomId = rooms[0].id
+    seedSampleData()
+    saveData()
   }
+}
+
+function loadDarkMode() {
+  darkMode = localStorage.getItem('ilf_dark') === 'true'
+  document.documentElement.classList.toggle('dark', darkMode)
+}
+
+function toggleDarkMode() {
+  darkMode = !darkMode
+  localStorage.setItem('ilf_dark', String(darkMode))
+  document.documentElement.classList.toggle('dark', darkMode)
+  render()
 }
 
 function saveData() {
@@ -284,6 +324,92 @@ function pinIcon(name: string): string {
   return '📦'
 }
 
+function startVoiceSearch() {
+  const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+  if (!SpeechRecognition) { alert('Voice search is not supported in this browser. Try Chrome or Edge.'); return }
+  if (isListening) return
+  isListening = true
+  const recognition = new SpeechRecognition()
+  recognition.lang = 'en-US'
+  recognition.interimResults = false
+  recognition.maxAlternatives = 1
+  recognition.onresult = (event: any) => {
+    const transcript = event.results[0][0].transcript
+    searchQuery = transcript
+    isListening = false
+    handleSearch()
+    render()
+  }
+  recognition.onerror = () => { isListening = false; render() }
+  recognition.onend = () => { isListening = false; render() }
+  recognition.start()
+  render()
+}
+
+const QUICK_CHIPS = [
+  { label: 'Keys', query: 'keys', icon: '🔑' },
+  { label: 'Passport', query: 'passport', icon: '🛂' },
+  { label: 'Laptop', query: 'laptop', icon: '💻' },
+  { label: 'Wallet', query: 'wallet', icon: '👛' },
+]
+
+function quickSearch(query: string) {
+  searchQuery = query
+  handleSearch()
+  render()
+}
+
+let searchPulseTimer: ReturnType<typeof setTimeout> | null = null
+
+function handleSearch() {
+  if (!searchQuery) { glowingItemId = null; showResultPopup = false; resultItem = null; redirectNotice = ''; return }
+  const q = searchQuery.toLowerCase()
+
+  if (searchPulseTimer) { clearTimeout(searchPulseTimer); searchPulseTimer = null }
+
+  const current = items.filter(i => i.roomId === currentRoomId)
+  const currentMatches = current.filter(i =>
+    i.name.toLowerCase().includes(q) || i.location.toLowerCase().includes(q) || i.category.toLowerCase().includes(q)
+  )
+
+  if (currentMatches.length > 0) {
+    resultItem = currentMatches[0]
+    glowingItemId = resultItem.id
+    showResultPopup = true
+    redirectNotice = ''
+    searchPulseTimer = setTimeout(() => { glowingItemId = null; if (!searchQuery) { showResultPopup = false; resultItem = null }; render() }, 4000)
+    return
+  }
+
+  for (const room of rooms) {
+    if (room.id === currentRoomId) continue
+    const roomMatches = items.filter(i => i.roomId === room.id &&
+      (i.name.toLowerCase().includes(q) || i.location.toLowerCase().includes(q) || i.category.toLowerCase().includes(q))
+    )
+    if (roomMatches.length > 0) {
+      currentRoomId = room.id
+      resultItem = roomMatches[0]
+      glowingItemId = resultItem.id
+      showResultPopup = true
+      selectedZone = null
+      redirectNotice = `Switched to ${room.name}`
+      searchPulseTimer = setTimeout(() => { glowingItemId = null; if (!searchQuery) { showResultPopup = false; resultItem = null; redirectNotice = '' }; render() }, 4000)
+      return
+    }
+  }
+
+  showResultPopup = false
+  resultItem = null
+  glowingItemId = null
+}
+
+function dismissResultPopup() {
+  showResultPopup = false
+  resultItem = null
+  if (!searchQuery) glowingItemId = null
+  render()
+}
+
 function runScan() {
   scanning = true
   scanLog = ['📸 Initializing camera...', '🔍 Scanning room...']
@@ -324,7 +450,8 @@ function runScan() {
     } else {
       clearInterval(interval)
       scanLog.push('✅ Scan complete! Items updated.')
-      scanning = false; render()
+      scanning = false; showConfetti = true; render()
+      setTimeout(() => { showConfetti = false; render() }, 1500)
     }
   }, 800)
 }
@@ -391,6 +518,7 @@ function renderDashboard(app: HTMLDivElement) {
           <h1>📍 Item Location Finder</h1>
           <div class="header-actions">
             <span class="user-badge">${escapeHtml(currentUser?.email || '')}</span>
+            <button id="dark-btn" class="btn-icon" title="Toggle dark mode">${darkMode ? '☀️' : '🌙'}</button>
             <button id="scan-btn" class="btn-scan ${scanning ? 'scanning' : ''}">📸 Scan Room</button>
             <button id="add-btn" class="btn-primary">+ Add Item</button>
             <button id="signout-btn" class="btn-secondary">Sign Out</button>
@@ -403,14 +531,24 @@ function renderDashboard(app: HTMLDivElement) {
             <button id="dismiss-alerts" class="alert-dismiss">✕</button>
           </div>` : ''}
         <div class="search-bar">
-          <input type="text" id="search" placeholder="🔍 Search items..." value="${escapeHtml(searchQuery)}" />
+          <input type="text" id="search" placeholder="Search items..." value="${escapeHtml(searchQuery)}" />
+          <button id="mic-btn" class="btn-mic ${isListening ? 'listening' : ''}" title="Search by voice">${isListening ? '🔴' : '🎤'}</button>
           ${searchQuery ? `<button id="clear-search" class="btn-clear">✕</button>` : ''}
         </div>
+        ${!searchQuery ? `
+          <div class="quick-chips">
+            ${QUICK_CHIPS.map(chip => `
+              <button class="chip-btn" data-query="${escapeHtml(chip.query)}">${chip.icon} ${chip.label}</button>
+            `).join('')}
+          </div>
+        ` : ''}
         <p class="item-count">${allRoomItems.length} item${allRoomItems.length !== 1 ? 's' : ''} in this room ${searchQuery ? `· ${filtered.length} match${filtered.length !== 1 ? 'es' : ''}` : ''}</p>
+        ${redirectNotice ? `<div class="redirect-notice">🔄 ${escapeHtml(redirectNotice)}</div>` : ''}
       </header>
 
       ${showScanModal ? renderScanModal() : ''}
       ${showAddModal ? renderAddModal() : ''}
+      ${showConfetti ? '<div class="confetti-container">' + Array.from({length: 8}, (_, i) => `<div class="confetti-piece" style="animation-delay: ${i * 0.08}s; left: ${10 + i * 10}%; background: ${['#6366f1','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#ec4899','#84cc16'][i]}"></div>`).join('') + '</div>' : ''}
 
       <div class="dash-layout">
         <div class="items-panel">
@@ -428,9 +566,38 @@ function renderDashboard(app: HTMLDivElement) {
           <div class="items-grid">
             ${filtered.length === 0 ? `
               <div class="empty-state">
-                <div class="empty-icon">📦</div>
-                <h2>${searchQuery ? 'No items match your search' : 'No items in this room'}</h2>
-                <p>${searchQuery ? 'Try a different search term' : 'Click "📸 Scan Room" or "+ Add Item" to start'}</p>
+                ${searchQuery ? `
+                  <div class="empty-icon">🔍</div>
+                  <h2>No items match your search</h2>
+                  <p>Try a different search term</p>
+                ` : `
+                  <div class="empty-icon">🏠</div>
+                  <h2>Welcome to your ${escapeHtml(room.name)}</h2>
+                  <p>Start tracking your belongings in 3 simple steps</p>
+                  <div class="walkthrough">
+                    <div class="walkthrough-step">
+                      <div class="step-num">1</div>
+                      <div class="step-content">
+                        <strong>📸 Scan your room</strong>
+                        <span>Point your camera around the room — AI auto-detects items</span>
+                      </div>
+                    </div>
+                    <div class="walkthrough-step">
+                      <div class="step-num">2</div>
+                      <div class="step-content">
+                        <strong>✏️ Or add items manually</strong>
+                        <span>Tap "+ Add Item" and type what you stored and where</span>
+                      </div>
+                    </div>
+                    <div class="walkthrough-step">
+                      <div class="step-num">3</div>
+                      <div class="step-content">
+                        <strong>🔍 Find in seconds</strong>
+                        <span>Search any item later — know exactly where it is</span>
+                      </div>
+                    </div>
+                  </div>
+                `}
               </div>
             ` : filtered.map(item => {
               const conf = getConfidence(item.lastConfirmed)
@@ -469,6 +636,30 @@ function renderDashboard(app: HTMLDivElement) {
               <h3>🗺️ ${escapeHtml(room.name)}</h3>
               ${selectedZone ? `<button id="clear-zone" class="btn-small">Clear Filter</button>` : ''}
             </div>
+            ${showResultPopup && resultItem ? `
+              <div class="result-popup">
+                <button id="close-result" class="btn-back result-close">✕</button>
+                <div class="result-content">
+                  <div class="result-icon">${pinIcon(resultItem.name)}</div>
+                  <div class="result-info">
+                    <strong>${escapeHtml(resultItem.name)}</strong>
+                    <span>📍 ${escapeHtml(resultItem.location)}</span>
+                    <span class="result-meta">${escapeHtml(resultItem.category)} · ${escapeHtml(rooms.find(r => r.id === resultItem!.roomId)?.name || '')}</span>
+                  </div>
+                </div>
+                <div class="result-snapshot">
+                  <div class="snapshot-placeholder">
+                    <span class="snapshot-icon">📸</span>
+                    <span>Last scan snapshot</span>
+                    <small>${escapeHtml(timeAgo(resultItem.lastConfirmed))}</small>
+                  </div>
+                </div>
+                <div class="result-actions">
+                  <button class="btn-small pin-btn" data-id="${resultItem.id}">📍 Show on Map</button>
+                  <button class="btn-small edit-btn" data-id="${resultItem.id}">✏️ Edit</button>
+                </div>
+              </div>
+            ` : ''}
             <div class="room-map">
               <div class="room-border" id="room-border">
                 <div class="room-label">Drag zones to rearrange</div>
@@ -507,14 +698,30 @@ function renderDashboard(app: HTMLDivElement) {
       </div>
     </div>`
 
+  document.getElementById('dark-btn')!.addEventListener('click', toggleDarkMode)
   document.getElementById('scan-btn')!.addEventListener('click', () => { showScanModal = true; showAddModal = false; render() })
   document.getElementById('add-btn')!.addEventListener('click', () => { showAddModal = true; showScanModal = false; editingItem = null; render() })
   document.getElementById('signout-btn')!.addEventListener('click', signOut)
 
+  const micBtn = document.getElementById('mic-btn')
+  if (micBtn) micBtn.addEventListener('click', startVoiceSearch)
+
   const search = document.getElementById('search') as HTMLInputElement
-  search.addEventListener('input', () => { searchQuery = search.value; render() })
+  search.addEventListener('input', () => {
+    searchQuery = search.value
+    if (searchQuery) handleSearch()
+    else { glowingItemId = null; showResultPopup = false; resultItem = null; redirectNotice = '' }
+    render()
+  })
+  search.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      if (searchQuery) handleSearch()
+      render()
+    }
+  })
   const clearBtn = document.getElementById('clear-search')
-  if (clearBtn) clearBtn.addEventListener('click', () => { searchQuery = ''; render() })
+  if (clearBtn) clearBtn.addEventListener('click', () => { searchQuery = ''; glowingItemId = null; showResultPopup = false; resultItem = null; redirectNotice = ''; render() })
 
   const dismissBtn = document.getElementById('dismiss-alerts')
   if (dismissBtn) dismissBtn.addEventListener('click', () => {
@@ -523,6 +730,16 @@ function renderDashboard(app: HTMLDivElement) {
 
   const clearZoneBtn = document.getElementById('clear-zone')
   if (clearZoneBtn) clearZoneBtn.addEventListener('click', () => { selectedZone = null; render() })
+
+  const closeResultBtn = document.getElementById('close-result')
+  if (closeResultBtn) closeResultBtn.addEventListener('click', dismissResultPopup)
+
+  document.querySelectorAll<HTMLElement>('.chip-btn').forEach(el => {
+    el.addEventListener('click', () => {
+      const q = el.dataset.query
+      if (q) quickSearch(q)
+    })
+  })
 
   document.getElementById('add-room-btn')!.addEventListener('click', () => {
     const name = prompt('New room name:')?.trim()
@@ -769,4 +986,5 @@ document.addEventListener('mousedown', (e) => {
   document.addEventListener('mouseup', onUp)
 })
 
+loadDarkMode()
 render()
