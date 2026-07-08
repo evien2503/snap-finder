@@ -829,18 +829,20 @@ async function mediapipeDetect(): Promise<Array<{ name: string; category: string
   if (!objectDetector && !(await loadObjectDetector())) return null
 
   const video = document.getElementById('dash-scan-video') as HTMLVideoElement
-  if (!video || !video.videoWidth || !video.videoHeight) return null
+  if (!video || video.videoWidth === 0 || video.videoHeight === 0) return null
 
   try {
     const detections = objectDetector!.detect(video)
-    if (!detections.detections || detections.detections.length === 0) return null
+    if (!detections.detections || detections.detections.length === 0) {
+      return null
+    }
 
     const seen = new Set<string>()
     const items: Array<{ name: string; category: string }> = []
     for (const d of detections.detections) {
       const name = d.categories[0]?.categoryName
       const score = d.categories[0]?.score
-      if (name && score != null && score > 0.4 && !seen.has(name)) {
+      if (name && score != null && score > 0.35 && !seen.has(name)) {
         seen.add(name)
         items.push({ name, category: categorizeItem(name) })
       }
@@ -860,6 +862,8 @@ function startDashboardScan() {
   btn.disabled = true
   btn.innerText = 'Accessing Camera...'
 
+  loadObjectDetector()
+
   navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
     .then(stream => {
       cameraStream = stream
@@ -869,22 +873,27 @@ function startDashboardScan() {
       btn.innerText = 'Scanning Room...'
 
       let mpItems: Array<{ name: string; category: string }> | null = null
-      loadObjectDetector()
-      setTimeout(async () => {
+
+      const detectInterval = setInterval(async () => {
         const r = await mediapipeDetect()
-        if (r) { mpItems = r; console.log('🤖 MediaPipe detected:', r.map(i => i.name).join(', ')) }
-      }, 600)
+        if (r && r.length > 0) {
+          mpItems = r
+          console.log('🤖 MediaPipe detected:', r.map(i => i.name).join(', '))
+          clearInterval(detectInterval)
+        }
+      }, 800)
 
       setTimeout(() => { const el = document.getElementById('dash-box-laptop'); if (el) el.style.display = 'block' }, 800)
       setTimeout(() => { const el = document.getElementById('dash-box-passport'); if (el) el.style.display = 'block' }, 1600)
       setTimeout(() => { const el = document.getElementById('dash-box-keys'); if (el) el.style.display = 'block' }, 2300)
 
       setTimeout(() => {
+        clearInterval(detectInterval)
         if (cameraStream) { cameraStream.getTracks().forEach(t => t.stop()); cameraStream = null }
 
         const room = currentRoom()
         const detected = mpItems && mpItems.length > 0
-          ? mpItems.map(a => ({ name: a.name, loc: 'Unsorted / Off-Map Items', cat: a.category, room: room.id }))
+          ? mpItems.map(a => ({ name: a.name, loc: room.zones.length > 0 ? room.zones[Math.floor(Math.random() * room.zones.length)].label : 'Unsorted / Off-Map Items', cat: a.category, room: room.id }))
           : [
               { name: 'Passport', loc: 'Unsorted / Off-Map Items', cat: 'Documents', room: room.id },
               { name: 'Laptop', loc: 'Unsorted / Off-Map Items', cat: 'Electronics', room: room.id },
@@ -1292,7 +1301,7 @@ function renderDashboard(app: HTMLDivElement) {
     </div>`
 
   document.getElementById('dark-btn')!.addEventListener('click', toggleDarkMode)
-  document.getElementById('scan-btn')!.addEventListener('click', () => { showCameraScan = true; showAddModal = false; render() })
+  document.getElementById('scan-btn')!.addEventListener('click', () => { showCameraScan = true; showAddModal = false; render(); loadObjectDetector() })
   document.getElementById('add-btn')!.addEventListener('click', () => { showAddModal = true; showScanModal = false; editingItem = null; render() })
   document.getElementById('signout-btn')!.addEventListener('click', signOut)
 
@@ -1308,7 +1317,7 @@ function renderDashboard(app: HTMLDivElement) {
   const panicBtn = document.getElementById('panic-mic-btn')
   if (panicBtn) panicBtn.addEventListener('click', startPanicVoiceSearch)
   const mobScanBtn = document.getElementById('mob-scan-btn')
-  if (mobScanBtn) mobScanBtn.addEventListener('click', () => { showCameraScan = true; showAddModal = false; render() })
+  if (mobScanBtn) mobScanBtn.addEventListener('click', () => { showCameraScan = true; showAddModal = false; render(); loadObjectDetector() })
 
   const search = document.getElementById('search') as HTMLInputElement
   search.addEventListener('input', () => {
