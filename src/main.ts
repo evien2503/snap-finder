@@ -1,4 +1,22 @@
 import './style.css'
+import { ObjectDetector, FilesetResolver } from '@mediapipe/tasks-vision'
+
+const AI_GATEWAY = 'https://ai-gateway.guidesify.com/v1/chat/completions'
+const AI_KEY = 'sk-geGIXRsAATrWi7LBUnmk8Q'
+const AI_MODEL = 'deepseek-v4-flash-free'
+
+async function aiChat(messages: Array<{ role: string; content: any }>, maxTokens = 200): Promise<string | null> {
+  try {
+    const res = await fetch(AI_GATEWAY, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${AI_KEY}` },
+      body: JSON.stringify({ model: AI_MODEL, messages, max_tokens: maxTokens }),
+    })
+    if (!res.ok) { console.warn('AI API error:', res.status); return null }
+    const data = await res.json()
+    return data.choices?.[0]?.message?.content?.trim() || null
+  } catch (e) { console.warn('AI call failed:', e); return null }
+}
 
 interface Zone {
   id: string
@@ -356,6 +374,15 @@ function pinIcon(name: string): string {
   return '📦'
 }
 
+async function aiExtractItem(transcript: string, isPanic = false): Promise<string | null> {
+  const prompt = isPanic
+    ? `Extract the item name the user is looking for from this query. Return ONLY the item name (1-3 words), nothing else.\nQuery: "${transcript}"`
+    : `Extract the most likely item name from this speech transcript. Return ONLY the item name (1-3 words), nothing else.\nTranscript: "${transcript}"`
+  const result = await aiChat([{ role: 'user', content: prompt }], 30)
+  if (result && result.length > 0 && result.length < 50) return result
+  return null
+}
+
 function startVoiceSearch() {
   const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
   if (!SpeechRecognition) { console.error('Speech Recognition API not supported in this browser.'); alert('Voice search is not supported in this browser. Try Chrome or Edge.'); return }
@@ -366,11 +393,13 @@ function startVoiceSearch() {
   recognition.continuous = false
   recognition.interimResults = false
   recognition.maxAlternatives = 1
-  recognition.onstart = () => { console.log('🎤 Mic active: System is listening...') }
-  recognition.onresult = (event: any) => {
+  recognition.onstart = () => { console.log('🎤 Mic active: System is listening...'); render() }
+  recognition.onresult = async (event: any) => {
     const transcript = event.results[0][0].transcript
     console.log('✅ Speech captured successfully:', transcript)
-    searchQuery = transcript
+    const aiItem = await aiExtractItem(transcript)
+    searchQuery = aiItem || transcript
+    if (aiItem) console.log('🤖 AI extracted item:', aiItem)
     isListening = false
     handleSearch()
     render()
@@ -409,19 +438,28 @@ function startPanicVoiceSearch() {
   recognition.interimResults = false
   recognition.maxAlternatives = 1
 
-  recognition.onstart = () => { console.log('🎤 Mic active: Panic voice search listening...') }
+  recognition.onstart = () => {
+    console.log('🎤 Mic active: Panic voice search listening...')
+    showPanicToast('🎤 Listening... say what you lost')
+    render()
+  }
 
-  recognition.onresult = (event: any) => {
+  recognition.onresult = async (event: any) => {
     const transcript = event.results[0][0].transcript.toLowerCase()
     console.log('✅ Panic voice captured successfully:', transcript)
     panicListening = false
 
-    const fillers = ['where is my ', 'find my ', 'where are my ', 'where is the ', 'find the ', 'i need my ', 'locate my ', 'locate the ', 'show me my ', 'show me the ', 'find where my ', "where's my ", "where's the "]
-    let keyword = transcript
-    for (const f of fillers) {
-      if (keyword.startsWith(f)) { keyword = keyword.slice(f.length); break }
+    let keyword: string = (await aiExtractItem(transcript, true)) || ''
+    if (keyword) {
+      console.log('🤖 AI extracted panic item:', keyword)
+    } else {
+      const fillers = ['where is my ', 'find my ', 'where are my ', 'where is the ', 'find the ', 'i need my ', 'locate my ', 'locate the ', 'show me my ', 'show me the ', 'find where my ', "where's my ", "where's the "]
+      keyword = transcript
+      for (const f of fillers) {
+        if (keyword.startsWith(f)) { keyword = keyword.slice(f.length); break }
+      }
+      keyword = keyword.replace(/[^a-z0-9 ]/g, '').trim()
     }
-    keyword = keyword.replace(/[^a-z0-9 ]/g, '').trim()
 
     if (!keyword) {
       showPanicToast('Say the item name, e.g. "find my passport"')
@@ -746,6 +784,74 @@ function renderOnboarding(app: HTMLDivElement) {
   }
 }
 
+/* --- MediaPipe object detection --- */
+
+let objectDetector: ObjectDetector | null = null
+let detectorLoading = false
+
+async function loadObjectDetector(): Promise<boolean> {
+  if (objectDetector) return true
+  if (detectorLoading) return false
+  detectorLoading = true
+  try {
+    const vision = await FilesetResolver.forVisionTasks(
+      'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm'
+    )
+    objectDetector = await ObjectDetector.createFromOptions(vision, {
+      baseOptions: {
+        modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float32/1/efficientdet_lite0.tflite',
+        delegate: 'CPU',
+      },
+      scoreThreshold: 0.4,
+      maxResults: 10,
+    })
+    console.log('🤖 MediaPipe ObjectDetector loaded')
+    return true
+  } catch (e) {
+    console.warn('MediaPipe load failed:', e)
+    return false
+  } finally {
+    detectorLoading = false
+  }
+}
+
+function categorizeItem(name: string): string {
+  const n = name.toLowerCase()
+  if (n.includes('laptop') || n.includes('phone') || n.includes('computer') || n.includes('tablet') || n.includes('keyboard') || n.includes('mouse') || n.includes('tv') || n.includes('monitor')) return 'Electronics'
+  if (n.includes('book') || n.includes('paper') || n.includes('document') || n.includes('magazine')) return 'Documents'
+  if (n.includes('bottle') || n.includes('cup') || n.includes('glass') || n.includes('bowl')) return 'Kitchen'
+  if (n.includes('chair') || n.includes('couch') || n.includes('bed') || n.includes('table') || n.includes('desk') || n.includes('sofa') || n.includes('bench') || n.includes('seat')) return 'Furniture'
+  if (n.includes('bag') || n.includes('backpack') || n.includes('suitcase') || n.includes('handbag') || n.includes('wallet')) return 'Accessories'
+  return 'Other'
+}
+
+async function mediapipeDetect(): Promise<Array<{ name: string; category: string }> | null> {
+  if (!objectDetector && !(await loadObjectDetector())) return null
+
+  const video = document.getElementById('dash-scan-video') as HTMLVideoElement
+  if (!video || !video.videoWidth || !video.videoHeight) return null
+
+  try {
+    const detections = objectDetector!.detect(video)
+    if (!detections.detections || detections.detections.length === 0) return null
+
+    const seen = new Set<string>()
+    const items: Array<{ name: string; category: string }> = []
+    for (const d of detections.detections) {
+      const name = d.categories[0]?.categoryName
+      const score = d.categories[0]?.score
+      if (name && score != null && score > 0.4 && !seen.has(name)) {
+        seen.add(name)
+        items.push({ name, category: categorizeItem(name) })
+      }
+    }
+    return items.length > 0 ? items : null
+  } catch (e) {
+    console.warn('MediaPipe detect failed:', e)
+    return null
+  }
+}
+
 /* --- Dashboard camera scan (onboarding-style) --- */
 
 function startDashboardScan() {
@@ -762,6 +868,13 @@ function startDashboardScan() {
 
       btn.innerText = 'Scanning Room...'
 
+      let mpItems: Array<{ name: string; category: string }> | null = null
+      loadObjectDetector()
+      setTimeout(async () => {
+        const r = await mediapipeDetect()
+        if (r) { mpItems = r; console.log('🤖 MediaPipe detected:', r.map(i => i.name).join(', ')) }
+      }, 600)
+
       setTimeout(() => { const el = document.getElementById('dash-box-laptop'); if (el) el.style.display = 'block' }, 800)
       setTimeout(() => { const el = document.getElementById('dash-box-passport'); if (el) el.style.display = 'block' }, 1600)
       setTimeout(() => { const el = document.getElementById('dash-box-keys'); if (el) el.style.display = 'block' }, 2300)
@@ -770,11 +883,13 @@ function startDashboardScan() {
         if (cameraStream) { cameraStream.getTracks().forEach(t => t.stop()); cameraStream = null }
 
         const room = currentRoom()
-        const detected = [
-          { name: 'Passport', loc: 'Unsorted / Off-Map Items', cat: 'Documents', room: room.id },
-          { name: 'Laptop', loc: 'Unsorted / Off-Map Items', cat: 'Electronics', room: room.id },
-          { name: 'House Keys', loc: 'Unsorted / Off-Map Items', cat: 'Keys', room: room.id },
-        ]
+        const detected = mpItems && mpItems.length > 0
+          ? mpItems.map(a => ({ name: a.name, loc: 'Unsorted / Off-Map Items', cat: a.category, room: room.id }))
+          : [
+              { name: 'Passport', loc: 'Unsorted / Off-Map Items', cat: 'Documents', room: room.id },
+              { name: 'Laptop', loc: 'Unsorted / Off-Map Items', cat: 'Electronics', room: room.id },
+              { name: 'House Keys', loc: 'Unsorted / Off-Map Items', cat: 'Keys', room: room.id },
+            ]
         for (const d of detected) {
           const existing = items.find(i => i.name.toLowerCase() === d.name.toLowerCase() && i.roomId === d.room)
           if (existing) {
