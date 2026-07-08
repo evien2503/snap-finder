@@ -84,6 +84,7 @@ let searchQuery = ''
 let authError = ''
 let editingItem: Item | null = null
 let showScanModal = false
+let showCameraScan = false
 let showAddModal = false
 let scanning = false
 let scanLog: string[] = []
@@ -102,6 +103,14 @@ let showMobileMap = false
 let cameraStream: MediaStream | null = null
 let dismissAlerts: string[] = []
 let cameraError = ''
+let showPrompt = false
+let promptPlaceholder = ''
+let promptCallback: ((v: string | null) => void) | null = null
+let panicListening = false
+let panicToast = ''
+let panicToastTimer: ReturnType<typeof setTimeout> | null = null
+let showOnboarding = false
+let onboardingStep: 1 | 2 = 1
 
 function storageKey(user: string): string {
   return `ilf_data_${user}`
@@ -127,6 +136,14 @@ function loadData() {
   if (!currentUser) return
   const raw = localStorage.getItem(storageKey(currentUser.email))
   if (!raw) {
+    if (!localStorage.getItem('ilf_onboarded')) {
+      rooms = JSON.parse(JSON.stringify(DEFAULT_ROOMS))
+      items = []
+      currentRoomId = rooms[0].id
+      showOnboarding = true
+      onboardingStep = 1
+      return
+    }
     seedSampleData()
     saveData()
     return
@@ -139,6 +156,7 @@ function loadData() {
       roomId: i.roomId || rooms[0]?.id || '',
     }))
     currentRoomId = data.currentRoomId || rooms[0]?.id || ''
+    showOnboarding = false
   } catch {
     seedSampleData()
     saveData()
@@ -201,7 +219,8 @@ function signIn(email: string, password: string) {
 }
 
 function signOut() {
-  currentUser = null; items = []; rooms = []; authError = ''; navigate('auth')
+  if (cameraStream) { cameraStream.getTracks().forEach(t => t.stop()); cameraStream = null }
+  currentUser = null; items = []; rooms = []; authError = ''; showOnboarding = false; navigate('auth')
 }
 
 function currentRoom(): Room {
@@ -339,22 +358,124 @@ function pinIcon(name: string): string {
 
 function startVoiceSearch() {
   const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-  if (!SpeechRecognition) { alert('Voice search is not supported in this browser. Try Chrome or Edge.'); return }
+  if (!SpeechRecognition) { console.error('Speech Recognition API not supported in this browser.'); alert('Voice search is not supported in this browser. Try Chrome or Edge.'); return }
   if (isListening) return
   isListening = true
   const recognition = new SpeechRecognition()
   recognition.lang = 'en-US'
+  recognition.continuous = false
   recognition.interimResults = false
   recognition.maxAlternatives = 1
+  recognition.onstart = () => { console.log('🎤 Mic active: System is listening...') }
   recognition.onresult = (event: any) => {
     const transcript = event.results[0][0].transcript
+    console.log('✅ Speech captured successfully:', transcript)
     searchQuery = transcript
     isListening = false
     handleSearch()
     render()
   }
-  recognition.onerror = () => { isListening = false; render() }
+  recognition.onerror = (event: any) => {
+    console.error('❌ Speech recognition error caught:', event.error)
+    isListening = false
+    const errorMsg = event.error === 'not-allowed' ? 'Mic permission denied. Allow mic access in browser settings.' :
+      event.error === 'no-speech' ? 'No speech detected. Try speaking louder.' :
+      event.error === 'audio-capture' ? 'No microphone found. Check your mic.' :
+      event.error === 'network' ? 'Network error. Check your connection.' :
+      'Mic error: ' + event.error
+    alert(errorMsg)
+    render()
+  }
   recognition.onend = () => { isListening = false; render() }
+  recognition.start()
+  render()
+}
+
+function showPanicToast(msg: string) {
+  panicToast = msg
+  if (panicToastTimer) clearTimeout(panicToastTimer)
+  panicToastTimer = setTimeout(() => { panicToast = ''; render() }, 4000)
+  render()
+}
+
+function startPanicVoiceSearch() {
+  const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+  if (!SpeechRecognition) { console.error('Speech Recognition API not supported in this browser.'); alert('Voice search is not supported in this browser. Try Chrome or Edge.'); return }
+  if (panicListening || isListening) return
+  panicListening = true
+  const recognition = new SpeechRecognition()
+  recognition.lang = 'en-US'
+  recognition.continuous = false
+  recognition.interimResults = false
+  recognition.maxAlternatives = 1
+
+  recognition.onstart = () => { console.log('🎤 Mic active: Panic voice search listening...') }
+
+  recognition.onresult = (event: any) => {
+    const transcript = event.results[0][0].transcript.toLowerCase()
+    console.log('✅ Panic voice captured successfully:', transcript)
+    panicListening = false
+
+    const fillers = ['where is my ', 'find my ', 'where are my ', 'where is the ', 'find the ', 'i need my ', 'locate my ', 'locate the ', 'show me my ', 'show me the ', 'find where my ', "where's my ", "where's the "]
+    let keyword = transcript
+    for (const f of fillers) {
+      if (keyword.startsWith(f)) { keyword = keyword.slice(f.length); break }
+    }
+    keyword = keyword.replace(/[^a-z0-9 ]/g, '').trim()
+
+    if (!keyword) {
+      showPanicToast('Say the item name, e.g. "find my passport"')
+      render(); return
+    }
+
+    searchQuery = keyword
+
+    const q = searchQuery.toLowerCase()
+    const match = items.find(i =>
+      i.name.toLowerCase().includes(q) || i.location.toLowerCase().includes(q) || i.category.toLowerCase().includes(q)
+    )
+
+    if (!match) {
+      showPanicToast(`Could not find "${keyword}" in any room`)
+      searchQuery = ''
+      render(); return
+    }
+
+    if (match.roomId !== currentRoomId) {
+      currentRoomId = match.roomId
+    }
+
+    glowingItemId = match.id
+    selectedZone = null
+
+    const room = rooms.find(r => r.id === match.roomId)
+    if (room) {
+      const zoned = room.zones.find(z => Math.abs(match.zoneX - z.x) < 15 && Math.abs(match.zoneY - z.y) < 15)
+      if (zoned) selectedZone = zoned.id
+    }
+
+    if (searchPulseTimer) { clearTimeout(searchPulseTimer); searchPulseTimer = null }
+    searchPulseTimer = setTimeout(() => { glowingItemId = null; if (!searchQuery) { showResultPopup = false; resultItem = null }; render() }, 5000)
+
+    showPanicToast(`Found: ${match.name} is on the ${match.location}`)
+    render()
+  }
+
+  recognition.onerror = (event: any) => {
+    console.error('❌ Panic speech recognition error:', event.error)
+    panicListening = false
+    const errorMsg = event.error === 'not-allowed' ? 'Mic permission denied. Allow mic access in browser settings.' :
+      event.error === 'no-speech' ? 'No speech detected. Try speaking louder.' :
+      event.error === 'audio-capture' ? 'No microphone found. Check your mic.' :
+      event.error === 'network' ? 'Network error. Check your connection.' :
+      'Mic error: ' + event.error
+    showPanicToast(errorMsg)
+    render()
+  }
+  recognition.onend = () => {
+    if (panicListening) { panicListening = false; render() }
+  }
+
   recognition.start()
   render()
 }
@@ -445,10 +566,26 @@ function stopCamera() {
   }
 }
 
+function captureSnapshot(): string | null {
+  const video = document.getElementById('scan-video') as HTMLVideoElement
+  if (!video || !video.videoWidth) return null
+  const canvas = document.createElement('canvas')
+  canvas.width = video.videoWidth
+  canvas.height = video.videoHeight
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return null
+  ctx.drawImage(video, 0, 0)
+  return canvas.toDataURL('image/jpeg', 0.8)
+}
+
 function runScan() {
   scanning = true
-  stopCamera()
   scanLog = ['📸 Initializing camera...', '🔍 Scanning room via AI vision...']
+  const snapshot = captureSnapshot()
+  if (snapshot) {
+    sessionStorage.setItem('last_snapshot', snapshot)
+    scanLog.push('📷 Room snapshot captured')
+  }
   render()
   const room = currentRoom()
   const avZones = room.zones
@@ -506,9 +643,192 @@ function dismissAlertItem(itemId: string) {
   render()
 }
 
+function showInlinePrompt(placeholder: string): Promise<string | null> {
+  return new Promise(resolve => {
+    showPrompt = true
+    promptPlaceholder = placeholder
+    promptCallback = resolve
+    render()
+    setTimeout(() => {
+      const el = document.getElementById('inline-prompt-input') as HTMLInputElement
+      if (el) el.focus()
+    }, 100)
+  })
+}
+
+function completeOnboarding() {
+  const top3 = [
+    { name: 'Passport', location: 'Unsorted / Off-Map Items', category: 'Documents', zoneX: 50, zoneY: 50, roomId: rooms[0].id },
+    { name: 'Laptop', location: 'Unsorted / Off-Map Items', category: 'Electronics', zoneX: 50, zoneY: 50, roomId: rooms[0].id },
+    { name: 'House Keys', location: 'Unsorted / Off-Map Items', category: 'Keys', zoneX: 50, zoneY: 50, roomId: rooms[0].id },
+  ]
+  for (const t of top3) {
+    items.push({
+      id: crypto.randomUUID().slice(0, 8),
+      name: t.name, location: t.location, category: t.category,
+      roomId: t.roomId,
+      createdAt: formatDate(new Date()),
+      lastConfirmed: new Date().toISOString(),
+      zoneX: t.zoneX, zoneY: t.zoneY,
+    })
+  }
+  currentRoomId = rooms[0].id
+  localStorage.setItem('ilf_onboarded', 'true')
+  saveData()
+  showOnboarding = false
+  render()
+}
+
+function startCameraScan() {
+  const btn = document.getElementById('start-scan-btn') as HTMLButtonElement
+  if (!btn) return
+  btn.disabled = true
+  btn.innerText = 'Accessing Camera...'
+
+  navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
+    .then(stream => {
+      cameraStream = stream
+      const video = document.getElementById('onboarding-video') as HTMLVideoElement
+      if (video) { video.srcObject = stream; video.play() }
+
+      btn.innerText = 'Scanning Room...'
+
+      setTimeout(() => { const el = document.getElementById('box-laptop'); if (el) el.style.display = 'block' }, 800)
+      setTimeout(() => { const el = document.getElementById('box-passport'); if (el) el.style.display = 'block' }, 1600)
+      setTimeout(() => { const el = document.getElementById('box-keys'); if (el) el.style.display = 'block' }, 2300)
+
+      setTimeout(() => {
+        if (cameraStream) { cameraStream.getTracks().forEach(t => t.stop()); cameraStream = null }
+        onboardingStep = 2
+        render()
+      }, 3500)
+    })
+    .catch(() => {
+      alert('Camera access blocked. Ensure you are loading via localhost and no other app is using the camera.')
+      btn.disabled = false
+      btn.innerText = 'Retry 3-Sec Scan'
+    })
+}
+
+function renderOnboarding(app: HTMLDivElement) {
+  if (onboardingStep === 1) {
+    app.innerHTML = `
+      <div id="onboarding-overlay" style="position: fixed; top:0; left:0; width:100vw; height:100vh; background: rgba(15, 23, 42, 0.95); z-index: 9999; display: flex; flex-direction: column; align-items: center; justify-content: center; color: white; font-family: sans-serif; padding: 20px; box-sizing: border-box;">
+        <div style="display: flex; flex-direction: column; align-items: center; text-align: center; max-width: 500px; width: 100%;">
+          <h2 style="margin-bottom: 10px; font-size: 1.5rem;">📸 Quick Room Setup</h2>
+          <p style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 20px;">Point your camera at your space for 3 seconds to find your essentials.</p>
+          <div id="camera-viewport" style="position: relative; width: 100%; aspect-ratio: 4/3; background: #1e293b; border-radius: 12px; overflow: hidden; border: 2px solid #3b82f6;">
+            <video id="onboarding-video" autoplay playsinline muted style="width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1);"></video>
+            <div class="scan-laser" style="position: absolute; top: 0; left: 0; width: 100%; height: 4px; background: linear-gradient(to bottom, rgba(59, 130, 246, 0), #3b82f6); animation: scanMotion 2s linear infinite;"></div>
+            <div id="box-passport" style="display: none; position: absolute; border: 2px solid #22c55e; background: rgba(34, 197, 94, 0.1); border-radius: 4px; padding: 2px 6px; color: #22c55e; font-size: 10px; font-weight: bold; top: 45%; left: 15%; width: 25%; height: 20%;">Passport</div>
+            <div id="box-laptop" style="display: none; position: absolute; border: 2px solid #3b82f6; background: rgba(59, 130, 246, 0.1); border-radius: 4px; padding: 2px 6px; color: #3b82f6; font-size: 10px; font-weight: bold; top: 25%; left: 45%; width: 45%; height: 45%;">Laptop</div>
+            <div id="box-keys" style="display: none; position: absolute; border: 2px solid #eab308; background: rgba(234, 179, 8, 0.1); border-radius: 4px; padding: 2px 6px; color: #eab308; font-size: 10px; font-weight: bold; top: 75%; left: 35%; width: 15%; height: 12%;">Keys</div>
+          </div>
+          <button id="start-scan-btn" style="margin-top: 20px; background: #3b82f6; color: white; border: none; padding: 12px 30px; font-weight: bold; border-radius: 8px; cursor: pointer; transition: background 0.2s;">Start 3-Sec Scan</button>
+        </div>
+      </div>`
+    document.getElementById('start-scan-btn')!.addEventListener('click', startCameraScan)
+  } else {
+    app.innerHTML = `
+      <div id="onboarding-overlay" style="position: fixed; top:0; left:0; width:100vw; height:100vh; background: rgba(15, 23, 42, 0.95); z-index: 9999; display: flex; flex-direction: column; align-items: center; justify-content: center; color: white; font-family: sans-serif; padding: 20px; box-sizing: border-box;">
+        <div style="display: flex; flex-direction: column; align-items: center; text-align: center; max-width: 450px; width: 100%;">
+          <h2 style="margin-bottom: 10px; font-size: 1.5rem;">🎉 Essentials Detected!</h2>
+          <p style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 25px;">We successfully locked down your highest priority items. Secure them now to unlock your dashboard layout.</p>
+          <div style="background: #1e293b; border-radius: 12px; width: 100%; padding: 15px; text-align: left; box-sizing: border-box; margin-bottom: 25px; border: 1px solid #334155;">
+            <div style="display: flex; align-items: center; margin-bottom: 12px; color: #4ade80;"><span style="margin-right: 10px;">✅</span> 🪪 Passport <span style="margin-left: auto; font-size: 12px; color: #64748b;">Detected</span></div>
+            <div style="display: flex; align-items: center; margin-bottom: 12px; color: #4ade80;"><span style="margin-right: 10px;">✅</span> 💻 Laptop <span style="margin-left: auto; font-size: 12px; color: #64748b;">Detected</span></div>
+            <div style="display: flex; align-items: center; color: #4ade80;"><span style="margin-right: 10px;">✅</span> 🔑 House Keys <span style="margin-left: auto; font-size: 12px; color: #64748b;">Detected</span></div>
+          </div>
+          <button id="secure-save-btn" style="background: #22c55e; color: white; border: none; width: 100%; padding: 14px; font-weight: bold; border-radius: 8px; cursor: pointer; font-size: 1rem; transition: background 0.2s;">Pin My Top 3 Essentials &amp; Start</button>
+        </div>
+      </div>`
+    document.getElementById('secure-save-btn')!.addEventListener('click', completeOnboarding)
+  }
+}
+
+/* --- Dashboard camera scan (onboarding-style) --- */
+
+function startDashboardScan() {
+  const btn = document.getElementById('dash-scan-btn') as HTMLButtonElement
+  if (!btn) return
+  btn.disabled = true
+  btn.innerText = 'Accessing Camera...'
+
+  navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
+    .then(stream => {
+      cameraStream = stream
+      const video = document.getElementById('dash-scan-video') as HTMLVideoElement
+      if (video) { video.srcObject = stream; video.play() }
+
+      btn.innerText = 'Scanning Room...'
+
+      setTimeout(() => { const el = document.getElementById('dash-box-laptop'); if (el) el.style.display = 'block' }, 800)
+      setTimeout(() => { const el = document.getElementById('dash-box-passport'); if (el) el.style.display = 'block' }, 1600)
+      setTimeout(() => { const el = document.getElementById('dash-box-keys'); if (el) el.style.display = 'block' }, 2300)
+
+      setTimeout(() => {
+        if (cameraStream) { cameraStream.getTracks().forEach(t => t.stop()); cameraStream = null }
+
+        const room = currentRoom()
+        const detected = [
+          { name: 'Passport', loc: 'Unsorted / Off-Map Items', cat: 'Documents', room: room.id },
+          { name: 'Laptop', loc: 'Unsorted / Off-Map Items', cat: 'Electronics', room: room.id },
+          { name: 'House Keys', loc: 'Unsorted / Off-Map Items', cat: 'Keys', room: room.id },
+        ]
+        for (const d of detected) {
+          const existing = items.find(i => i.name.toLowerCase() === d.name.toLowerCase() && i.roomId === d.room)
+          if (existing) {
+            existing.lastConfirmed = new Date().toISOString()
+          } else {
+            items.push({
+              id: crypto.randomUUID().slice(0, 8),
+              name: d.name, location: d.loc, category: d.cat,
+              roomId: d.room,
+              createdAt: formatDate(new Date()),
+              lastConfirmed: new Date().toISOString(),
+              zoneX: 50, zoneY: 50,
+            })
+          }
+        }
+        saveData()
+        showConfetti = true
+        showCameraScan = false
+        render()
+        setTimeout(() => { showConfetti = false; render() }, 1500)
+      }, 3500)
+    })
+    .catch(() => {
+      alert('Camera access blocked. Allow camera permissions and try again.')
+      btn.disabled = false
+      btn.innerText = '📸 Start Scan'
+    })
+}
+
+function renderCameraScan(): string {
+  return `
+    <div class="camera-scan-overlay" id="camera-scan-overlay">
+      <div class="camera-scan-inner">
+        <div class="camera-scan-header">
+          <h2>📸 Room Scan</h2>
+          <button id="close-camera-scan" class="btn-back">✕</button>
+        </div>
+        <div id="camera-scan-viewport" class="camera-scan-viewport">
+          <video id="dash-scan-video" autoplay playsinline muted style="width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1);"></video>
+          <div class="camera-scan-laser"></div>
+          <div id="dash-box-passport" class="camera-scan-box passport">Passport</div>
+          <div id="dash-box-laptop" class="camera-scan-box laptop">Laptop</div>
+          <div id="dash-box-keys" class="camera-scan-box keys">Keys</div>
+        </div>
+        <p class="camera-scan-hint">Point your camera at your space to detect essentials</p>
+        <button id="dash-scan-btn" class="camera-scan-btn">📸 Start Scan</button>
+      </div>
+    </div>`
+}
+
 function render() {
   const app = document.querySelector<HTMLDivElement>('#app')!
   if (currentPage === 'auth') renderAuth(app)
+  else if (showOnboarding) { app.innerHTML = ''; renderOnboarding(app) }
   else renderDashboard(app)
 }
 
@@ -609,9 +929,42 @@ function renderDashboard(app: HTMLDivElement) {
         ${redirectNotice ? `<div class="redirect-notice">🔄 ${escapeHtml(redirectNotice)}</div>` : ''}
       </header>
 
+      ${showCameraScan ? renderCameraScan() : ''}
       ${showScanModal ? renderScanModal() : ''}
       ${showAddModal ? renderAddModal() : ''}
       ${showConfetti ? '<div class="confetti-container">' + Array.from({length: 8}, (_, i) => `<div class="confetti-piece" style="animation-delay: ${i * 0.08}s; left: ${10 + i * 10}%; background: ${['#6366f1','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#ec4899','#84cc16'][i]}"></div>`).join('') + '</div>' : ''}
+
+      ${showResultPopup && resultItem ? `
+        <div class="result-popup-mobile" id="result-popup-mobile">
+          <div class="result-popup-inner">
+            <button id="close-result-mob" class="btn-back result-close">✕</button>
+            <div class="result-content">
+              <div class="result-icon">${pinIcon(resultItem.name)}</div>
+              <div class="result-info">
+                <strong>${escapeHtml(resultItem.name)}</strong>
+                <span>📍 ${escapeHtml(resultItem.location)}</span>
+                <span class="result-meta">${escapeHtml(resultItem.category)} · ${escapeHtml(rooms.find(r => r.id === resultItem!.roomId)?.name || '')}</span>
+              </div>
+            </div>
+            <div class="result-snapshot">
+              ${(() => {
+                const snap = sessionStorage.getItem('last_snapshot')
+                return snap
+                  ? `<img src="${snap}" alt="Snapshot" class="snapshot-img" />`
+                  : `<div class="snapshot-placeholder">
+                      <span class="snapshot-icon">📸</span>
+                      <span>Last scan snapshot</span>
+                      <small>${escapeHtml(timeAgo(resultItem.lastConfirmed))}</small>
+                    </div>`
+              })()}
+            </div>
+            <div class="result-actions">
+              <button class="btn-small pin-btn" data-id="${resultItem.id}">📍 Show on Map</button>
+              <button class="btn-small edit-btn" data-id="${resultItem.id}">✏️ Edit</button>
+            </div>
+          </div>
+        </div>
+      ` : ''}
 
       <div class="dash-layout">
         <div class="items-panel">
@@ -712,11 +1065,16 @@ function renderDashboard(app: HTMLDivElement) {
                   </div>
                 </div>
                 <div class="result-snapshot">
-                  <div class="snapshot-placeholder">
-                    <span class="snapshot-icon">📸</span>
-                    <span>Last scan snapshot</span>
-                    <small>${escapeHtml(timeAgo(resultItem.lastConfirmed))}</small>
-                  </div>
+                  ${(() => {
+                    const snap = sessionStorage.getItem('last_snapshot')
+                    return snap
+                      ? `<img src="${snap}" alt="Snapshot" class="snapshot-img" />`
+                      : `<div class="snapshot-placeholder">
+                          <span class="snapshot-icon">📸</span>
+                          <span>Last scan snapshot</span>
+                          <small>${escapeHtml(timeAgo(resultItem.lastConfirmed))}</small>
+                        </div>`
+                  })()}
                 </div>
                 <div class="result-actions">
                   <button class="btn-small pin-btn" data-id="${resultItem.id}">📍 Show on Map</button>
@@ -798,10 +1156,28 @@ function renderDashboard(app: HTMLDivElement) {
         <button id="mob-scan-btn" class="bottom-scan-btn">📸 Scan Room</button>
         <button id="mob-mic-btn" class="bottom-icon-btn ${isListening ? 'listening' : ''}">${isListening ? '🔴' : '🎤'}</button>
       </div>
+      ${panicToast ? `<div class="panic-toast">${escapeHtml(panicToast)}</div>` : ''}
+
+      <button id="panic-mic-btn" class="panic-mic ${panicListening ? 'panic-listening' : ''}" title="Panic Find - say what you lost">
+        ${panicListening ? '🔴' : '🆘'}
+      </button>
+
+      ${showPrompt ? `
+        <div class="prompt-overlay" id="prompt-overlay">
+          <div class="prompt-card">
+            <h3 class="prompt-title">${escapeHtml(promptPlaceholder)}</h3>
+            <input type="text" id="inline-prompt-input" class="prompt-input" placeholder="Enter name..." autocomplete="off" />
+            <div class="prompt-actions">
+              <button id="prompt-cancel" class="btn-secondary">Cancel</button>
+              <button id="prompt-ok" class="btn-primary">OK</button>
+            </div>
+          </div>
+        </div>
+      ` : ''}
     </div>`
 
   document.getElementById('dark-btn')!.addEventListener('click', toggleDarkMode)
-  document.getElementById('scan-btn')!.addEventListener('click', () => { showScanModal = true; showAddModal = false; render() })
+  document.getElementById('scan-btn')!.addEventListener('click', () => { showCameraScan = true; showAddModal = false; render() })
   document.getElementById('add-btn')!.addEventListener('click', () => { showAddModal = true; showScanModal = false; editingItem = null; render() })
   document.getElementById('signout-btn')!.addEventListener('click', signOut)
 
@@ -814,8 +1190,10 @@ function renderDashboard(app: HTMLDivElement) {
   if (micBtn) micBtn.addEventListener('click', startVoiceSearch)
   const mobMicBtn = document.getElementById('mob-mic-btn')
   if (mobMicBtn) mobMicBtn.addEventListener('click', startVoiceSearch)
+  const panicBtn = document.getElementById('panic-mic-btn')
+  if (panicBtn) panicBtn.addEventListener('click', startPanicVoiceSearch)
   const mobScanBtn = document.getElementById('mob-scan-btn')
-  if (mobScanBtn) mobScanBtn.addEventListener('click', () => { showScanModal = true; showAddModal = false; render() })
+  if (mobScanBtn) mobScanBtn.addEventListener('click', () => { showCameraScan = true; showAddModal = false; render() })
 
   const search = document.getElementById('search') as HTMLInputElement
   search.addEventListener('input', () => {
@@ -844,6 +1222,8 @@ function renderDashboard(app: HTMLDivElement) {
 
   const closeResultBtn = document.getElementById('close-result')
   if (closeResultBtn) closeResultBtn.addEventListener('click', dismissResultPopup)
+  const closeResultMob = document.getElementById('close-result-mob')
+  if (closeResultMob) closeResultMob.addEventListener('click', dismissResultPopup)
 
   document.querySelectorAll<HTMLElement>('.chip-btn').forEach(el => {
     el.addEventListener('click', () => {
@@ -852,8 +1232,8 @@ function renderDashboard(app: HTMLDivElement) {
     })
   })
 
-  document.getElementById('add-room-btn')!.addEventListener('click', () => {
-    const name = prompt('New room name:')?.trim()
+  document.getElementById('add-room-btn')!.addEventListener('click', async () => {
+    const name = await showInlinePrompt('New room name:')
     if (name) addRoom(name)
   })
 
@@ -865,13 +1245,13 @@ function renderDashboard(app: HTMLDivElement) {
   })
 
   document.querySelectorAll<HTMLElement>('.tab-rename').forEach(el => {
-    el.addEventListener('click', (e) => {
+    el.addEventListener('click', async (e) => {
       e.stopPropagation()
       const id = el.dataset.roomId
       if (!id) return
       const room = rooms.find(r => r.id === id)
       if (!room) return
-      const name = prompt('Rename room:', room.name)?.trim()
+      const name = await showInlinePrompt('Rename room:')
       if (name) renameRoom(id, name)
     })
   })
@@ -1023,6 +1403,11 @@ function escapeHtml(str: string): string {
 
 document.addEventListener('click', (e) => {
   const t = e.target as HTMLElement
+  if (t.closest('#close-camera-scan') || (t.closest('#camera-scan-overlay') && !t.closest('.camera-scan-inner'))) {
+    if (cameraStream) { cameraStream.getTracks().forEach(t => t.stop()); cameraStream = null }
+    showCameraScan = false; render()
+  }
+  if (t.closest('#dash-scan-btn')) startDashboardScan()
   if (t.closest('#close-scan') || (t.closest('.modal-overlay') && t.closest('#scan-modal') === t)) {
     showScanModal = false; scanning = false; stopCamera(); cameraStream = null; cameraError = ''; render()
   }
@@ -1041,6 +1426,15 @@ document.addEventListener('click', (e) => {
     const id = (t.closest('.alert-snooze') as HTMLElement).dataset.snoozeId
     if (id) dismissAlertItem(id)
   }
+  if (t.closest('#prompt-ok')) {
+    const input = document.getElementById('inline-prompt-input') as HTMLInputElement
+    if (promptCallback) { promptCallback(input?.value?.trim() || null); promptCallback = null }
+    showPrompt = false; render()
+  }
+  if (t.closest('#prompt-cancel') || (t.closest('#prompt-overlay') && t.closest('.prompt-card') === null && t === t)) {
+    if (promptCallback) { promptCallback(null); promptCallback = null }
+    showPrompt = false; render()
+  }
   if (t.closest('#mini-map')) {
     const map = document.getElementById('mini-map')
     if (!map) return
@@ -1049,6 +1443,20 @@ document.addEventListener('click', (e) => {
     const y = ((e.clientY - rect.top) / rect.height) * 100
     const pin = document.getElementById('mini-pin')
     if (pin) { pin.style.left = `${Math.max(0, Math.min(100, x))}%`; pin.style.top = `${Math.max(0, Math.min(100, y))}%` }
+  }
+})
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && showPrompt) {
+    const input = document.getElementById('inline-prompt-input') as HTMLInputElement
+    if (document.activeElement === input && promptCallback) {
+      promptCallback(input?.value?.trim() || null); promptCallback = null
+      showPrompt = false; render()
+    }
+  }
+  if (e.key === 'Escape' && showPrompt) {
+    if (promptCallback) { promptCallback(null); promptCallback = null }
+    showPrompt = false; render()
   }
 })
 
@@ -1069,12 +1477,8 @@ document.addEventListener('submit', (e) => {
 
 /* --- Drag zones on map --- */
 
-document.addEventListener('mousedown', (e) => {
-  const zoneEl = (e.target as HTMLElement).closest<HTMLElement>('.drag-zone')
-  if (!zoneEl) return
-  if ((e.target as HTMLElement).closest('.map-pin')) return
-
-  e.preventDefault()
+function startDrag(zoneEl: HTMLElement) {
+  if ((zoneEl as HTMLElement).closest('.map-pin')) return
   const roomId = zoneEl.dataset.roomId
   const zoneId = zoneEl.dataset.zone
   if (!roomId || !zoneId) return
@@ -1082,18 +1486,19 @@ document.addEventListener('mousedown', (e) => {
   draggingZone = { roomId, zoneId }
   zoneEl.classList.add('dragging')
 
-  const border = document.getElementById('room-border')
+  const borderId = zoneEl.closest('.room-border')?.id || 'room-border'
+  const border = document.getElementById(borderId)
   if (!border) return
   const rect = border.getBoundingClientRect()
 
-  function onMove(ev: MouseEvent) {
+  function onMove(cx: number, cy: number) {
     if (!draggingZone) return
     const room = rooms.find(r => r.id === draggingZone!.roomId)
     if (!room) return
     const zone = room.zones.find(z => z.id === draggingZone!.zoneId)
     if (!zone) return
-    const px = ((ev.clientX - rect.left) / rect.width) * 100
-    const py = ((ev.clientY - rect.top) / rect.height) * 100
+    const px = ((cx - rect.left) / rect.width) * 100
+    const py = ((cy - rect.top) / rect.height) * 100
     zone.x = Math.max(0, Math.min(100, Math.round(px * 10) / 10))
     zone.y = Math.max(0, Math.min(100, Math.round(py * 10) / 10))
     const el = document.querySelector<HTMLElement>(`.drag-zone[data-zone="${zone.id}"][data-room-id="${room.id}"]`)
@@ -1104,13 +1509,37 @@ document.addEventListener('mousedown', (e) => {
     draggingZone = null
     document.querySelectorAll('.drag-zone.dragging').forEach(el => el.classList.remove('dragging'))
     saveData()
-    document.removeEventListener('mousemove', onMove)
-    document.removeEventListener('mouseup', onUp)
+    document.removeEventListener('mousemove', onMouseMove)
+    document.removeEventListener('mouseup', onMouseUp)
+    document.removeEventListener('touchmove', onTouchMove)
+    document.removeEventListener('touchend', onTouchEnd)
   }
 
-  document.addEventListener('mousemove', onMove)
-  document.addEventListener('mouseup', onUp)
+  function onMouseMove(ev: MouseEvent) { onMove(ev.clientX, ev.clientY) }
+  function onMouseUp() { onUp() }
+  function onTouchMove(ev: TouchEvent) { if (ev.touches[0]) onMove(ev.touches[0].clientX, ev.touches[0].clientY) }
+  function onTouchEnd() { onUp() }
+
+  document.addEventListener('mousemove', onMouseMove)
+  document.addEventListener('mouseup', onMouseUp)
+  document.addEventListener('touchmove', onTouchMove, { passive: true })
+  document.addEventListener('touchend', onTouchEnd)
+}
+
+document.addEventListener('mousedown', (e) => {
+  const zoneEl = (e.target as HTMLElement).closest<HTMLElement>('.drag-zone')
+  if (!zoneEl) return
+  if ((e.target as HTMLElement).closest('.map-pin')) return
+  e.preventDefault()
+  startDrag(zoneEl)
 })
+
+document.addEventListener('touchstart', (e) => {
+  const zoneEl = (e.target as HTMLElement).closest<HTMLElement>('.drag-zone')
+  if (!zoneEl) return
+  if ((e.target as HTMLElement).closest('.map-pin')) return
+  startDrag(zoneEl)
+}, { passive: true })
 
 loadDarkMode()
 render()
