@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #6366f1;
+  --color-primary-hover: #4f46e5;
+  --color-primary-light: rgba(99, 102, 241, 0.1);
+  --color-scan: #10b981;
+  --color-scan-hover: #059669;
+  --color-danger: #ef4444;
+  --color-warning: #f59e0b;
+}
+
+.touch-manipulation {
+  touch-action: manipulation;
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideUp {
+  from { transform: translateY(20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { transform: scale(1.3); box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.3); }
+  50% { transform: scale(1.5); box-shadow: 0 0 0 8px rgba(99, 102, 241, 0.5); }
+}
+
+@keyframes panicPulse {
+  0%, 100% { transform: scale(1); box-shadow: 0 4px 20px rgba(239, 68, 68, 0.5), 0 0 0 0 rgba(239, 68, 68, 0.4); }
+  50% { transform: scale(1.08); box-shadow: 0 4px 30px rgba(239, 68, 68, 0.7), 0 0 0 16px rgba(239, 68, 68, 0.15); }
+}
+
+@keyframes scanMotion {
+  0% { top: 0%; }
+  50% { top: 100%; }
+  100% { top: 0%; }
+}
+
+@keyframes confetti-fall {
+  0% { transform: translateY(-10px) rotate(0deg); opacity: 1; }
+  100% { transform: translateY(120px) rotate(720deg); opacity: 0; }
+}
+
+@keyframes scanPulse {
+  0%, 100% { border-color: rgba(16, 185, 129, 0.3); }
+  50% { border-color: rgba(16, 185, 129, 0.8); }
+}
+
+.animate-fade-in-up { animation: fadeInUp 0.3s ease-out both; }
+.animate-fade-in { animation: fadeIn 0.2s ease-out; }
+.animate-slide-up { animation: slideUp 0.25s ease-out; }
+.animate-pulse-glow { animation: pulse-glow 0.6s ease-in-out 5; }
+.animate-panic-pulse { animation: panicPulse 1s ease-in-out infinite; }
+.panic-pulse { animation: panicPulse 1s ease-in-out infinite; }
+
+/* Custom scrollbar for room tabs */
+.room-tabs::-webkit-scrollbar { height: 0; }

@@ -3,27 +3,5 @@
   "instructions": ["AGENTS.md"],
   "skills": {
     "paths": [".opencode/skills"]
-  },
-  "agent": {
-    "atlas": {
-      "description": "Plan executor",
-      "mode": "primary",
-      "model": "ai-gateway/free"
-    },
-    "hephaestus": {
-      "description": "Deep agent",
-      "mode": "primary",
-      "model": "openai/gpt-4o-mini"
-    },
-    "prometheus": {
-      "description": "Plan builder",
-      "mode": "primary",
-      "model": "ai-gateway/free"
-    },
-    "sisyphus": {
-      "description": "Ultraworker",
-      "mode": "primary",
-      "model": "ai-gateway/free"
-    }
   }
 }
