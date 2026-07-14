@@ -1,4 +1,23 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import Fuse from 'fuse.js'
+
+/* ── AI Gateway ── */
+const AI_GATEWAY = 'https://ai-gateway.guidesify.com/v1/chat/completions'
+const AI_KEY = 'sk-geGIXRsAATrWi7LBUnmk8Q'
+const AI_MODEL = 'deepseek-v4-flash-free'
+
+async function aiChat(messages: Array<{ role: string; content: any }>, maxTokens = 200): Promise<string | null> {
+  try {
+    const res = await fetch(AI_GATEWAY, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${AI_KEY}` },
+      body: JSON.stringify({ model: AI_MODEL, messages, max_tokens: maxTokens }),
+    })
+    if (!res.ok) return null
+    const data = await res.json()
+    return data.choices?.[0]?.message?.content?.trim() || null
+  } catch { return null }
+}
 
 /* ── Types ── */
 
@@ -140,6 +159,23 @@ export default function App() {
   const [authEmail, setAuthEmail] = useState('')
   const [authPassword, setAuthPassword] = useState('')
 
+  const [searchFocused, setSearchFocused] = useState(false)
+  const [semanticResults, setSemanticResults] = useState<Item[]>([])
+  const [aiThinking, setAiThinking] = useState(false)
+  const searchRef = useRef<HTMLInputElement>(null)
+  const semanticTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const fuse = useMemo(() => new Fuse(items, {
+    keys: [
+      { name: 'name', weight: 2 },
+      { name: 'location', weight: 1 },
+      { name: 'category', weight: 1 },
+    ],
+    threshold: 0.45,
+    includeScore: true,
+    minMatchCharLength: 2,
+  }), [items])
+
   const panicToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const searchPulseTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pulseTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -276,29 +312,55 @@ export default function App() {
 
   function deleteItem(id: string) { setItems(prev => prev.filter(i => i.id !== id)) }
 
-  /* ── Search ── */
+  /* ── Intelligent Search (Fuse + AI) ── */
   function handleSearch(q: string) {
-    if (!q) { setGlowingItemId(null); return }
-    const lower = q.toLowerCase()
-    const current = items.filter(i => i.roomId === currentRoomId)
-    const hits = current.filter(i => i.name.toLowerCase().includes(lower) || i.location.toLowerCase().includes(lower) || i.category.toLowerCase().includes(lower))
-    if (hits.length > 0) {
-      setGlowingItemId(hits[0].id)
+    if (!q) { setGlowingItemId(null); setSemanticResults([]); setSearchFocused(true); return }
+
+    // 1. Fuse fuzzy search across ALL items
+    const fuseResults = fuse.search(q)
+    const matched = fuseResults.slice(0, 6).map(r => r.item)
+    setSemanticResults(matched)
+
+    if (matched.length > 0) {
+      // Highlight best match in current room
+      const inCurrent = matched.filter(i => i.roomId === currentRoomId)
+      const best = inCurrent.length > 0 ? inCurrent[0] : matched[0]
+      setGlowingItemId(best.id)
       if (searchPulseTimer.current) clearTimeout(searchPulseTimer.current)
-      searchPulseTimer.current = setTimeout(() => { setGlowingItemId(null) }, 4000)
-      return
+      searchPulseTimer.current = setTimeout(() => { setGlowingItemId(null) }, 5000)
+    } else {
+      setGlowingItemId(null)
+      // 2. If Fuse found nothing, try AI semantic search (debounced)
+      if (semanticTimer.current) clearTimeout(semanticTimer.current)
+      semanticTimer.current = setTimeout(async () => {
+        if (!q.trim()) return
+        setAiThinking(true)
+        const itemList = items.map(i => `"${i.name}" in ${i.location} (${i.roomId})`).join(', ')
+        const prompt = `I have these items: ${itemList}. The user searched for: "${q}". Return ONLY the exact item name (from the list) that best matches the query — even if the query has typos or is a synonym. If nothing matches at all, return "null".`
+        const result = await aiChat([{ role: 'user', content: prompt }], 30)
+        setAiThinking(false)
+        if (result && result.toLowerCase() !== 'null') {
+          const match = items.find(i => i.name.toLowerCase() === result.toLowerCase())
+          if (match) {
+            if (match.roomId !== currentRoomId) setCurrentRoomId(match.roomId)
+            setGlowingItemId(match.id)
+            setSemanticResults([match])
+            if (searchPulseTimer.current) clearTimeout(searchPulseTimer.current)
+            searchPulseTimer.current = setTimeout(() => { setGlowingItemId(null) }, 5000)
+          }
+        }
+      }, 600)
     }
-    for (const r of rooms) {
-      if (r.id === currentRoomId) continue
-      const rm = items.filter(i => i.roomId === r.id && (i.name.toLowerCase().includes(lower) || i.location.toLowerCase().includes(lower) || i.category.toLowerCase().includes(lower)))
-      if (rm.length > 0) {
-        setCurrentRoomId(r.id); setGlowingItemId(rm[0].id)
-        if (searchPulseTimer.current) clearTimeout(searchPulseTimer.current)
-        searchPulseTimer.current = setTimeout(() => { setGlowingItemId(null) }, 4000)
-        return
-      }
-    }
-    setGlowingItemId(null)
+  }
+
+  function selectSearchResult(item: Item) {
+    setSearchQuery(item.name)
+    setSemanticResults([])
+    setSearchFocused(false)
+    if (item.roomId !== currentRoomId) setCurrentRoomId(item.roomId)
+    setGlowingItemId(item.id)
+    if (searchPulseTimer.current) clearTimeout(searchPulseTimer.current)
+    searchPulseTimer.current = setTimeout(() => { setGlowingItemId(null) }, 5000)
   }
 
   /* ── Voice / Panic ── */
@@ -643,12 +705,71 @@ export default function App() {
             )}
 
             {/* Search Bar */}
-            <div className="relative mb-1">
-              <input type="text" placeholder={`Search in ${room.name}...`} value={searchQuery} onChange={e => { setSearchQuery(e.target.value); if (e.target.value) handleSearch(e.target.value); else setGlowingItemId(null) }} onKeyDown={e => { if (e.key === 'Enter' && searchQuery) handleSearch(searchQuery) }}
+            <div className="relative mb-1" ref={el => { if (el) { /* container ref for dropdown positioning */ } }}>
+              <input ref={searchRef} type="text" placeholder={`Search in ${room.name}...`} value={searchQuery}
+                onChange={e => { setSearchQuery(e.target.value); if (e.target.value) handleSearch(e.target.value); else { setGlowingItemId(null); setSemanticResults([]) } }}
+                onKeyDown={e => { if (e.key === 'Enter' && searchQuery) { const fuseRes = fuse.search(searchQuery); if (fuseRes.length > 0) selectSearchResult(fuseRes[0].item) } }}
+                onFocus={() => setSearchFocused(true)}
+                onBlur={() => setTimeout(() => setSearchFocused(false), 200)}
                 className="w-full px-4 py-3 pr-14 border border-gray-200 dark:border-gray-700 rounded-xl text-sm outline-none focus:border-indigo-500 focus:ring-3 focus:ring-indigo-500/10 bg-white dark:bg-gray-800 dark:text-gray-100 transition-colors" />
               <button onClick={startVoiceSearch} className={`absolute right-9 top-1/2 -translate-y-1/2 bg-none border-none text-base cursor-pointer text-gray-500 dark:text-gray-400 p-1.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors ${isListening ? '!text-red-500 animate-pulse bg-red-500/10' : ''} touch-manipulation`}>{isListening ? '🔴' : '🎤'}</button>
               {searchQuery && (
-                <button onClick={() => { setSearchQuery(''); setGlowingItemId(null) }} className="absolute right-2 top-1/2 -translate-y-1/2 bg-none border-none text-base cursor-pointer text-gray-400 p-1 touch-manipulation">✕</button>
+                <button onClick={() => { setSearchQuery(''); setGlowingItemId(null); setSemanticResults([]) }} className="absolute right-2 top-1/2 -translate-y-1/2 bg-none border-none text-base cursor-pointer text-gray-400 p-1 touch-manipulation">✕</button>
+              )}
+
+              {/* Kiosk Search Results Dropdown */}
+              {searchFocused && searchQuery && (
+                <div className="absolute top-full left-0 right-0 mt-1 z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.15)] dark:shadow-[0_8px_32px_rgba(0,0,0,0.4)] overflow-hidden animate-[fadeInUp_0.15s_ease-out]">
+                  {aiThinking && (
+                    <div className="flex items-center gap-2 p-3 text-xs text-indigo-500 dark:text-indigo-400 border-b border-gray-100 dark:border-gray-700">
+                      <span className="w-3.5 h-3.5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                      AI is thinking...
+                    </div>
+                  )}
+                  {semanticResults.length === 0 && !aiThinking ? (
+                    <div className="p-3 text-xs text-gray-500 dark:text-gray-400 text-center">
+                      {searchQuery.length >= 2 ? 'No matches found. AI searching...' : 'Keep typing...'}
+                    </div>
+                  ) : (
+                    semanticResults.map((item, idx) => {
+                      const r = rooms.find(rr => rr.id === item.roomId)
+                      const isOther = item.roomId !== currentRoomId
+                      return (
+                        <button key={item.id}
+                          onMouseDown={e => e.preventDefault()}
+                          onClick={() => selectSearchResult(item)}
+                          className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors cursor-pointer border-none touch-manipulation ${
+                            idx === 0 ? 'bg-indigo-50/60 dark:bg-indigo-900/20' : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                          } ${isOther ? 'border-l-3 border-l-amber-400' : ''}`}>
+                          <div className="w-8 h-8 rounded-full flex items-center justify-center text-sm flex-shrink-0"
+                            style={{ background: `${pinColor(item.category)}20`, color: pinColor(item.category) }}>
+                            {categoryIcon(item.category)}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <strong className="text-sm text-gray-900 dark:text-gray-100">{item.name}</strong>
+                              {idx === 0 && (
+                                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-400 whitespace-nowrap">Best</span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
+                              <span>📍 {item.location}</span>
+                              {isOther && <span className="text-amber-500 font-medium">· {r?.name || 'Other room'} ↺</span>}
+                            </div>
+                          </div>
+                          <div className="text-xs text-gray-400 dark:text-gray-500 flex-shrink-0 text-right">
+                            <div className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-700">{item.category}</div>
+                          </div>
+                        </button>
+                      )
+                    })
+                  )}
+                  {semanticResults.length > 0 && (
+                    <div className="px-4 py-2 text-[10px] text-gray-400 dark:text-gray-500 border-t border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/30 text-center">
+                      {semanticResults.length} result{semanticResults.length > 1 ? 's' : ''} · Fuzzy match
+                    </div>
+                  )}
+                </div>
               )}
             </div>
 
@@ -667,16 +788,21 @@ export default function App() {
 
           {/* ── Room Tabs ── */}
           <div className="flex gap-1.5 mb-3 overflow-x-auto pb-1 flex-shrink-0 room-tabs max-md:overflow-x-auto max-md:snap-x max-md:snap-mandatory max-md:gap-1 max-md:pb-2 max-md:flex-nowrap">
-            {rooms.map(r => (
-              <button key={r.id} onClick={() => switchRoom(r.id)}
-                className={`flex items-center gap-1 px-3.5 py-2 text-xs font-medium whitespace-nowrap rounded-lg border transition-all cursor-pointer flex-shrink-0 max-md:snap-start touch-manipulation ${
-                  r.id === currentRoomId
-                    ? 'bg-indigo-500 text-white border-indigo-500'
-                    : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:border-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
-                }`}>
-                {r.name} <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${r.id === currentRoomId ? 'bg-white/20' : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400'}`}>{items.filter(i => i.roomId === r.id).length}</span>
-              </button>
-            ))}
+            {rooms.map(r => {
+              const hasGlow = glowingItemId && items.find(i => i.id === glowingItemId)?.roomId === r.id && r.id !== currentRoomId
+              return (
+                <button key={r.id} onClick={() => switchRoom(r.id)}
+                  className={`flex items-center gap-1 px-3.5 py-2 text-xs font-medium whitespace-nowrap rounded-lg border transition-all cursor-pointer flex-shrink-0 max-md:snap-start touch-manipulation ${
+                    r.id === currentRoomId
+                      ? 'bg-indigo-500 text-white border-indigo-500'
+                      : hasGlow
+                        ? 'bg-amber-50 dark:bg-amber-900/30 border-amber-400 dark:border-amber-600 text-amber-700 dark:text-amber-300 shadow-[0_0_12px_rgba(251,191,36,0.3)] animate-pulse'
+                        : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:border-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+                  }`}>
+                  {r.name} <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${r.id === currentRoomId ? 'bg-white/20' : hasGlow ? 'bg-amber-200 dark:bg-amber-800 text-amber-800 dark:text-amber-200' : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400'}`}>{items.filter(i => i.roomId === r.id).length}</span>
+                </button>
+              )
+            })}
             <button onClick={async () => { const n = await showInlinePrompt('New room name:'); if (n) addRoom(n) }}
               className="flex items-center justify-center w-9 h-9 bg-transparent border border-dashed border-gray-300 dark:border-gray-600 rounded-lg text-lg text-gray-500 dark:text-gray-400 cursor-pointer hover:border-indigo-500 hover:text-indigo-500 flex-shrink-0 transition-colors max-md:w-8 max-md:h-8 touch-manipulation">+</button>
           </div>
