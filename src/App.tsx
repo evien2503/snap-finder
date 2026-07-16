@@ -1,22 +1,33 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import Fuse from 'fuse.js'
 
-/* ── AI Gateway ── */
-const AI_GATEWAY = 'https://ai-gateway.guidesify.com/v1/chat/completions'
-const AI_KEY = 'sk-geGIXRsAATrWi7LBUnmk8Q'
-const AI_MODEL = 'deepseek-v4-flash-free'
+/* ── AI Vector Search — Cloudflare Worker ── */
+const AI_SEARCH_URL = import.meta.env.VITE_AI_SEARCH_URL || 'http://localhost:8787'
 
-async function aiChat(messages: Array<{ role: string; content: any }>, maxTokens = 200): Promise<string | null> {
+interface SearchResult {
+  itemId: string; itemName: string; location: string; category: string
+  roomId: string; roomName: string
+  zone: { id: string; label: string; x: number; y: number } | null
+  score: number
+}
+
+async function aiVectorSearch(
+  query: string,
+  items: Item[],
+  rooms: Room[]
+): Promise<SearchResult[]> {
   try {
-    const res = await fetch(AI_GATEWAY, {
+    const res = await fetch(`${AI_SEARCH_URL}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${AI_KEY}` },
-      body: JSON.stringify({ model: AI_MODEL, messages, max_tokens: maxTokens }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, items, rooms }),
     })
-    if (!res.ok) return null
+    if (!res.ok) return []
     const data = await res.json()
-    return data.choices?.[0]?.message?.content?.trim() || null
-  } catch { return null }
+    return data.results ?? []
+  } catch {
+    return []
+  }
 }
 
 /* ── Types ── */
@@ -25,6 +36,145 @@ interface Zone { id: string; label: string; x: number; y: number }
 interface Room { id: string; name: string; zones: Zone[] }
 interface Item { id: string; name: string; location: string; category: string; roomId: string; createdAt: string; lastConfirmed: string; zoneX: number; zoneY: number }
 interface User { email: string; password: string }
+interface ScannedItem {
+  id: string; name: string; category: string; location: string
+  imageData: string  // base64 JPEG
+  roomId: string; zoneX: number; zoneY: number
+  createdAt: string; lastConfirmed: string
+  aiDetected: boolean  // true = AI recognized it, false = manual entry
+}
+
+/* ── AI Vision Scan — Cloudflare Worker ── */
+const AI_SCAN_URL = import.meta.env.VITE_AI_SCAN_URL || import.meta.env.VITE_AI_SEARCH_URL || 'http://localhost:8787'
+
+interface VisionResult {
+  itemName: string
+  confidence: 'high' | 'medium' | 'low'
+  distinctFeatures: string[]
+  suggestedCategory: string
+  description: string
+}
+
+interface MatchResult {
+  match: boolean
+  matchedItem: string | null
+  scanId: string | null
+  confidence: 'high' | 'medium' | 'low'
+}
+
+async function visionScan(base64Image: string, userId: string, roomName = 'Unknown', location = 'Scanned'): Promise<VisionResult | null> {
+  try {
+    const res = await fetch(`${AI_SCAN_URL}/api/scan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: base64Image, userId, roomName, location }),
+    })
+    if (!res.ok) return null
+    return await res.json()
+  } catch {
+    return null
+  }
+}
+
+async function visionMatch(base64Image: string, userId: string): Promise<MatchResult | null> {
+  try {
+    const res = await fetch(`${AI_SCAN_URL}/api/match`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: base64Image, userId }),
+    })
+    if (!res.ok) return null
+    return await res.json()
+  } catch {
+    return null
+  }
+}
+
+async function fetchScanHistory(userId: string): Promise<any[]> {
+  try {
+    const res = await fetch(`${AI_SCAN_URL}/api/history`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId }),
+    })
+    if (!res.ok) return []
+    const data = await res.json()
+    return data.scans ?? []
+  } catch {
+    return []
+  }
+}
+
+interface ChatResponse { reply: string; suggestedItemIds: string[] }
+
+/* ── AI Chatbot — AI Gateway (OpenAI-compatible) ── */
+const AI_GATEWAY_URL = 'https://ai-gateway.guidesify.com/v1/chat/completions'
+const AI_GATEWAY_KEY = import.meta.env.VITE_AI_KEY || ''
+
+async function sendChat(message: string, items: Item[], rooms: Room[], history: Array<{ role: string; content: string }>): Promise<ChatResponse> {
+  if (!AI_GATEWAY_KEY) {
+    return { reply: 'AI key not configured. Add VITE_AI_KEY to your .env file to enable the assistant.', suggestedItemIds: [] }
+  }
+
+  /* Build inventory context for the prompt */
+  const roomMap = new Map(rooms.map(r => [r.id, r]))
+  const inventoryLines = items.map(item => {
+    const room = roomMap.get(item.roomId)
+    return `- ${item.name} (${item.category}) — ${item.location}, in ${room?.name ?? 'Unknown'} [id:${item.id}]`
+  })
+
+  const inventoryContext = inventoryLines.length > 0
+    ? `\n\nUSER'S TRACKED INVENTORY:\n${inventoryLines.join('\n')}`
+    : '\n\nUser has no tracked items yet.'
+
+  const systemPrompt = `You are a lost-item assistant. Help users find things by searching their inventory.
+
+RULES:
+- Be concise and friendly (2-4 sentences max).
+- If an item is in the inventory, tell them EXACTLY where it is (room + location).
+- If not found, suggest where they might keep it based on the item category.
+- For category queries, list ALL matching items with their locations.
+- Include item tracking IDs as [id:UUID] so the app can highlight them.${inventoryContext}`
+
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    ...history.map(h => ({ role: h.role as 'user' | 'assistant', content: h.content })),
+    { role: 'user', content: message },
+  ]
+
+  try {
+    // Try models in order: gpt-4o-mini (known working), then deepseek alternatives
+    const models = ['deepseek-v4-flash-free', 'deepseek-v4-pro', 'free', 'gpt-4o-mini']
+    let lastError = ''
+    for (const model of models) {
+      try {
+        const res = await fetch(AI_GATEWAY_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${AI_GATEWAY_KEY}` },
+          body: JSON.stringify({ model, messages, max_tokens: 500, temperature: 0.7 }),
+        })
+        if (res.ok) {
+          const data = await res.json()
+          const content = data.choices?.[0]?.message?.content?.trim()
+          if (content) {
+            /* Extract [id:...] tags for item highlighting */
+            const idRegex = /\[id:([^\]]+)\]/g
+            const suggestedItemIds: string[] = []
+            let m
+            while ((m = idRegex.exec(content)) !== null) suggestedItemIds.push(m[1])
+            const cleanReply = content.replace(/\[id:[^\]]+\]/g, '').trim()
+            return { reply: cleanReply, suggestedItemIds }
+          }
+        }
+        const errText = await res.text()
+        lastError = `${res.status}: ${errText.slice(0, 100)}`
+      } catch { /* try next model */ }
+    }
+    return { reply: `AI unavailable (tried ${models.length} models). Last error: ${lastError || 'network'}`, suggestedItemIds: [] }
+  } catch {
+    return { reply: 'Sorry, could not reach the AI service. Please try again.', suggestedItemIds: [] }
+  }
+}
 
 const DEFAULT_ROOMS: Room[] = [
   { id: 'room_living', name: 'Living Room', zones: [
@@ -63,6 +213,10 @@ const QUICK_CHIPS = [
 
 function storageKey(user: string) { return `ilf_data_${user}` }
 
+function hashPass(pw: string): string {
+  let h = 0; for (let i = 0; i < pw.length; i++) { const c = pw.charCodeAt(i); h = ((h << 5) - h) + c; h |= 0 }
+  return btoa(String(h))
+}
 function getUsers(): User[] { return JSON.parse(localStorage.getItem('ilf_users') || '[]') }
 function saveUsers(users: User[]) { localStorage.setItem('ilf_users', JSON.stringify(users)) }
 
@@ -126,6 +280,10 @@ function categoryIcon(cat: string) {
 /* ── React App ── */
 
 export default function App() {
+  /* ── Dark mode (eager: read before first paint to prevent flash) ── */
+  const initialDark = typeof window !== 'undefined' ? localStorage.getItem('ilf_dark') === 'true' : false
+  if (typeof document !== 'undefined') document.documentElement.classList.toggle('dark', initialDark)
+
   /* ── State ── */
   const [page, setPage] = useState<'auth' | 'dashboard'>('auth')
   const [user, setUser] = useState<User | null>(null)
@@ -134,23 +292,30 @@ export default function App() {
   const [currentRoomId, setCurrentRoomId] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [authError, setAuthError] = useState('')
-  const [darkMode, setDarkMode] = useState(false)
+  const [darkMode, setDarkMode] = useState(initialDark)
   const [isListening, setIsListening] = useState(false)
-  const [panicListening, setPanicListening] = useState(false)
-  const [panicToast, setPanicToast] = useState('')
   const [selectedZone, setSelectedZone] = useState<string | null>(null)
   const [glowingItemId, setGlowingItemId] = useState<string | null>(null)
+  const [glowingZoneId, setGlowingZoneId] = useState<string | null>(null)
+  const [glowingRoomIds, setGlowingRoomIds] = useState<string[]>([])
   const [showAddModal, setShowAddModal] = useState(false)
   const [editingItem, setEditingItem] = useState<Item | null>(null)
   const [showCameraScan, setShowCameraScan] = useState(false)
-  const [scanLog, setScanLog] = useState<string[]>([])
-  const [scanning, setScanning] = useState(false)
-  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null)
-  const [cameraError, setCameraError] = useState('')
+  const [scanMode, setScanMode] = useState<'idle' | 'camera' | 'captured' | 'analyzing' | 'result'>('idle')
+  const [capturedImage, setCapturedImage] = useState<string | null>(null)
+  const [scanResult, setScanResult] = useState<{ name: string; category: string; description: string; confidence?: string; features?: string[] } | null>(null)
+  const [scannedItems, setScannedItems] = useState<ScannedItem[]>([])
+  const [showScannedGallery, setShowScannedGallery] = useState(false)
   const [showConfetti, setShowConfetti] = useState(false)
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [onboardingStep, setOnboardingStep] = useState<1 | 2>(1)
   const [showMobileMap, setShowMobileMap] = useState(false)
+  const [showChat, setShowChat] = useState(false)
+  const [chatMessages, setChatMessages] = useState<Array<{role:'user'|'assistant';content:string;suggestedIds:string[]}>>([])
+  const [chatLoading, setChatLoading] = useState(false)
+  const [chatInput, setChatInput] = useState('')
+  const chatEndRef = useRef<HTMLDivElement>(null)
+  const chatInputRef = useRef<HTMLInputElement>(null)
   const [dismissAlerts, setDismissAlerts] = useState<string[]>([])
   const [showPrompt, setShowPrompt] = useState(false)
   const [promptPlaceholder, setPromptPlaceholder] = useState('')
@@ -160,7 +325,7 @@ export default function App() {
   const [authPassword, setAuthPassword] = useState('')
 
   const [searchFocused, setSearchFocused] = useState(false)
-  const [semanticResults, setSemanticResults] = useState<Item[]>([])
+  const [aiResults, setAiResults] = useState<SearchResult[]>([])
   const [aiThinking, setAiThinking] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
   const semanticTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -176,14 +341,12 @@ export default function App() {
     minMatchCharLength: 2,
   }), [items])
 
-  const panicToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const recognitionRef = useRef<any>(null)
+  const userRef = useRef<string>('anonymous')
   const searchPulseTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pulseTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  const recognitionRef = useRef<any>(null)
-  const panicRecognitionRef = useRef<any>(null)
-  const cameraScanStream = useRef<MediaStream | null>(null)
-  const dashScanStream = useRef<MediaStream | null>(null)
+  const scanVideoRef = useRef<HTMLVideoElement | null>(null)
+  const scanStreamRef = useRef<MediaStream | null>(null)
   const dragState = useRef<{ roomId: string; zoneId: string } | null>(null)
 
   const room = rooms.find(r => r.id === currentRoomId) || rooms[0]
@@ -199,12 +362,10 @@ export default function App() {
     return i.roomId === currentRoomId && isValidDate(i.lastConfirmed) && new Date(i.lastConfirmed).getTime() < cutoff
   })
 
-  /* ── Dark mode ── */
+  /* ── Sync dark class on toggle ── */
   useEffect(() => {
-    const d = localStorage.getItem('ilf_dark') === 'true'
-    setDarkMode(d)
-    document.documentElement.classList.toggle('dark', d)
-  }, [])
+    document.documentElement.classList.toggle('dark', darkMode)
+  }, [darkMode])
 
   function toggleDark() {
     const next = !darkMode
@@ -216,10 +377,11 @@ export default function App() {
   /* ── Data persistence ── */
   function save() {
     if (!user) return
-    localStorage.setItem(storageKey(user.email), JSON.stringify({ rooms, items, currentRoomId }))
+    localStorage.setItem(storageKey(user.email), JSON.stringify({ rooms, items, currentRoomId, scannedItems }))
   }
 
-  useEffect(() => { if (user) save() }, [rooms, items, currentRoomId])
+  useEffect(() => { if (user) save() }, [rooms, items, currentRoomId, scannedItems])
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [chatMessages])
 
   function loadData(u: User) {
     const raw = localStorage.getItem(storageKey(u.email))
@@ -234,7 +396,7 @@ export default function App() {
       }
       const rms = JSON.parse(JSON.stringify(DEFAULT_ROOMS))
       const its = SAMPLE_ITEMS.map(s => ({
-        id: crypto.randomUUID().slice(0, 8), name: s.name, location: s.location, category: s.category,
+        id: crypto.randomUUID(), name: s.name, location: s.location, category: s.category,
         roomId: s.roomId, createdAt: formatDate(new Date()), lastConfirmed: new Date(Date.now() - Math.random() * 86400000).toISOString(),
         zoneX: s.zoneX, zoneY: s.zoneY,
       }))
@@ -244,13 +406,14 @@ export default function App() {
     try {
       const data = JSON.parse(raw)
       setRooms(data.rooms?.length ? data.rooms : JSON.parse(JSON.stringify(DEFAULT_ROOMS)))
-      setItems((data.items || []).map((i: Item) => ({ ...i, roomId: i.roomId || DEFAULT_ROOMS[0]?.id || '' })))
-      setCurrentRoomId(data.currentRoomId || DEFAULT_ROOMS[0]?.id || '')
+      setItems((data.items || []).map((i: Item) => ({ ...i, roomId: i.roomId || (DEFAULT_ROOMS[0]?.id ?? 'room_living') })))
+      if (data.scannedItems) setScannedItems(data.scannedItems)
+      setCurrentRoomId(data.currentRoomId || (DEFAULT_ROOMS[0]?.id ?? 'room_living'))
       setShowOnboarding(false)
     } catch {
       const rms = JSON.parse(JSON.stringify(DEFAULT_ROOMS))
       const its = SAMPLE_ITEMS.map(s => ({
-        id: crypto.randomUUID().slice(0, 8), name: s.name, location: s.location, category: s.category,
+        id: crypto.randomUUID(), name: s.name, location: s.location, category: s.category,
         roomId: s.roomId, createdAt: formatDate(new Date()), lastConfirmed: new Date(Date.now() - Math.random() * 86400000).toISOString(),
         zoneX: s.zoneX, zoneY: s.zoneY,
       }))
@@ -262,35 +425,43 @@ export default function App() {
   function signUp() {
     const users = getUsers()
     if (users.find(u => u.email === authEmail)) { setAuthError('Email already registered'); return }
-    users.push({ email: authEmail, password: authPassword })
+    const hp = hashPass(authPassword)
+    users.push({ email: authEmail, password: hp })
     saveUsers(users)
-    const u: User = { email: authEmail, password: authPassword }
-    setUser(u)
+    const u: User = { email: authEmail, password: hp }
+    setUser(u); userRef.current = u.email
     loadData(u)
     setAuthError(''); setPage('dashboard')
   }
 
   function signIn() {
     const users = getUsers()
-    const u = users.find(us => us.email === authEmail && us.password === authPassword)
+    let u = users.find(us => us.email === authEmail && us.password === hashPass(authPassword))
+    // Backward compat: also check plaintext passwords (pre-hash migration)
+    if (!u) {
+      const legacy = users.find(us => us.email === authEmail && us.password === authPassword)
+      if (legacy) {
+        legacy.password = hashPass(authPassword) // migrate to hash
+        saveUsers(users)
+        u = legacy
+      }
+    }
     if (!u) { setAuthError('Invalid email or password'); return }
-    setUser(u)
+    setUser(u); userRef.current = u.email
     loadData(u)
     setAuthError(''); setPage('dashboard')
   }
 
   function signOut() {
-    if (cameraStream) { cameraStream.getTracks().forEach(t => t.stop()); setCameraStream(null) }
-    if (cameraScanStream.current) { cameraScanStream.current.getTracks().forEach(t => t.stop()); cameraScanStream.current = null }
-    if (dashScanStream.current) { dashScanStream.current.getTracks().forEach(t => t.stop()); dashScanStream.current = null }
-    setUser(null); setItems([]); setRooms([]); setAuthError(''); setShowOnboarding(false); setPage('auth')
+    stopScanCamera()
+    setUser(null); setItems([]); setRooms([]); setScannedItems([]); setAuthError(''); setShowOnboarding(false); setPage('auth')
   }
 
   /* ── Room & Item CRUD ── */
   function switchRoom(id: string) { setCurrentRoomId(id); setSelectedZone(null); setGlowingItemId(null) }
 
   function addRoom(name: string) {
-    const id = `room_${crypto.randomUUID().slice(0, 6)}`
+    const id = `room_${crypto.randomUUID()}`
     setRooms(prev => [...prev, { id, name, zones: [
       { id: 'center', label: 'Center', x: 50, y: 40 },
       { id: 'corner_1', label: 'Corner 1', x: 15, y: 20 },
@@ -301,7 +472,7 @@ export default function App() {
 
   function addItem(name: string, location: string, category: string, zoneX = 50, zoneY = 50) {
     setItems(prev => [...prev, {
-      id: crypto.randomUUID().slice(0, 8), name, location, category, roomId: currentRoomId,
+      id: crypto.randomUUID(), name, location, category, roomId: currentRoomId,
       createdAt: formatDate(new Date()), lastConfirmed: new Date().toISOString(), zoneX, zoneY,
     }])
   }
@@ -312,58 +483,89 @@ export default function App() {
 
   function deleteItem(id: string) { setItems(prev => prev.filter(i => i.id !== id)) }
 
-  /* ── Intelligent Search (Fuse + AI) ── */
+  /* ── Kiosk-Style Intelligent Search (Fuse + AI Vector) ── */
   function handleSearch(q: string) {
-    if (!q) { setGlowingItemId(null); setSemanticResults([]); setSearchFocused(true); return }
+    if (!q) {
+      setGlowingItemId(null); setGlowingZoneId(null); setGlowingRoomIds([]); setAiResults([]); setSearchFocused(true); return
+    }
 
-    // 1. Fuse fuzzy search across ALL items
+    // 1. Fuse fuzzy search — instant local results
     const fuseResults = fuse.search(q)
     const matched = fuseResults.slice(0, 6).map(r => r.item)
-    setSemanticResults(matched)
+    setAiResults(matched.map(i => ({
+      itemId: i.id, itemName: i.name, location: i.location, category: i.category,
+      roomId: i.roomId, roomName: rooms.find(r => r.id === i.roomId)?.name ?? 'Unknown',
+      zone: null, score: 0.5,
+    })))
 
-    if (matched.length > 0) {
-      // Highlight best match in current room
-      const inCurrent = matched.filter(i => i.roomId === currentRoomId)
-      const best = inCurrent.length > 0 ? inCurrent[0] : matched[0]
+    // Highlight best Fuse match in current room
+    const inCurrent = matched.filter(i => i.roomId === currentRoomId)
+    const best = inCurrent.length > 0 ? inCurrent[0] : matched[0]
+    if (best) {
       setGlowingItemId(best.id)
-      if (searchPulseTimer.current) clearTimeout(searchPulseTimer.current)
-      searchPulseTimer.current = setTimeout(() => { setGlowingItemId(null) }, 5000)
+      highlightZoneForItem(best)
+      glowRoomTab(best.roomId)
     } else {
       setGlowingItemId(null)
-      // 2. If Fuse found nothing, try AI semantic search (debounced)
-      if (semanticTimer.current) clearTimeout(semanticTimer.current)
-      semanticTimer.current = setTimeout(async () => {
-        if (!q.trim()) return
-        setAiThinking(true)
-        const itemList = items.map(i => `"${i.name}" in ${i.location} (${i.roomId})`).join(', ')
-        const prompt = `I have these items: ${itemList}. The user searched for: "${q}". Return ONLY the exact item name (from the list) that best matches the query — even if the query has typos or is a synonym. If nothing matches at all, return "null".`
-        const result = await aiChat([{ role: 'user', content: prompt }], 30)
-        setAiThinking(false)
-        if (result && result.toLowerCase() !== 'null') {
-          const match = items.find(i => i.name.toLowerCase() === result.toLowerCase())
-          if (match) {
-            if (match.roomId !== currentRoomId) setCurrentRoomId(match.roomId)
-            setGlowingItemId(match.id)
-            setSemanticResults([match])
-            if (searchPulseTimer.current) clearTimeout(searchPulseTimer.current)
-            searchPulseTimer.current = setTimeout(() => { setGlowingItemId(null) }, 5000)
-          }
-        }
-      }, 600)
     }
-  }
 
-  function selectSearchResult(item: Item) {
-    setSearchQuery(item.name)
-    setSemanticResults([])
-    setSearchFocused(false)
-    if (item.roomId !== currentRoomId) setCurrentRoomId(item.roomId)
-    setGlowingItemId(item.id)
     if (searchPulseTimer.current) clearTimeout(searchPulseTimer.current)
-    searchPulseTimer.current = setTimeout(() => { setGlowingItemId(null) }, 5000)
+    searchPulseTimer.current = setTimeout(() => { setGlowingItemId(null); setGlowingZoneId(null) }, 6000)
+
+    // 2. AI vector search (debounced) — semantic synonyms & typos
+    if (semanticTimer.current) clearTimeout(semanticTimer.current)
+    semanticTimer.current = setTimeout(async () => {
+      if (!q.trim()) return
+      setAiThinking(true)
+      const results = await aiVectorSearch(q, items, rooms)
+      setAiThinking(false)
+
+      if (results.length > 0) {
+        setAiResults(results)
+        const top = results[0]
+        setGlowingItemId(top.itemId)
+        if (top.zone) setGlowingZoneId(top.zone.id)
+        glowRoomTab(top.roomId)
+        if (top.roomId !== currentRoomId) setCurrentRoomId(top.roomId)
+        if (searchPulseTimer.current) clearTimeout(searchPulseTimer.current)
+        searchPulseTimer.current = setTimeout(() => { setGlowingItemId(null); setGlowingZoneId(null) }, 6000)
+      }
+    }, 400)
   }
 
-  /* ── Voice / Panic ── */
+  function glowRoomTab(roomId: string) {
+    setGlowingRoomIds(prev => {
+      if (prev.includes(roomId)) return prev
+      return [...prev, roomId]
+    })
+    setTimeout(() => setGlowingRoomIds(prev => prev.filter(r => r !== roomId)), 6000)
+  }
+
+  function highlightZoneForItem(item: Item) {
+    const rm = rooms.find(r => r.id === item.roomId)
+    if (!rm) return
+    let bestDist = 25
+    let bestZone: string | null = null
+    for (const z of rm.zones) {
+      const d = Math.sqrt((item.zoneX - z.x) ** 2 + (item.zoneY - z.y) ** 2)
+      if (d < bestDist) { bestDist = d; bestZone = z.id }
+    }
+    setGlowingZoneId(bestZone)
+  }
+
+  function selectAiResult(result: SearchResult) {
+    setSearchQuery(result.itemName)
+    setAiResults([])
+    setSearchFocused(false)
+    if (result.roomId !== currentRoomId) setCurrentRoomId(result.roomId)
+    setGlowingItemId(result.itemId)
+    if (result.zone) setGlowingZoneId(result.zone.id)
+    glowRoomTab(result.roomId)
+    if (searchPulseTimer.current) clearTimeout(searchPulseTimer.current)
+    searchPulseTimer.current = setTimeout(() => { setGlowingItemId(null); setGlowingZoneId(null) }, 5000)
+  }
+
+  /* ── Voice Search ── */
   function startVoiceSearch() {
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
     if (!SR) { alert('Voice search needs Chrome/Edge.'); return }
@@ -379,166 +581,140 @@ export default function App() {
     r.start()
   }
 
-  function showPanicToast(msg: string) {
-    setPanicToast(msg)
-    if (panicToastTimer.current) clearTimeout(panicToastTimer.current)
-    panicToastTimer.current = setTimeout(() => setPanicToast(''), 4000)
+  /* ── AI Vision Scanner ── */
+
+  function openScanCamera() {
+    setScanMode('camera'); setCapturedImage(null); setScanResult(null)
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
+      .then(stream => {
+        scanStreamRef.current = stream
+        if (scanVideoRef.current) { scanVideoRef.current.srcObject = stream; scanVideoRef.current.play() }
+      })
+      .catch(() => { setScanMode('idle'); alert('Camera access denied') })
   }
 
-  function startPanicVoiceSearch() {
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-    if (!SR) { alert('Voice search needs Chrome/Edge.'); return }
-    const r = new SR()
-    r.lang = 'en-US'; r.continuous = false; r.interimResults = false; r.maxAlternatives = 1
-    r.onstart = () => { setPanicListening(true); showPanicToast('🎤 Listening... say what you lost') }
-    r.onresult = (e: any) => {
-      let t = e.results[0][0].transcript.toLowerCase()
-      setPanicListening(false)
-      const fillers = ['where is my ', 'find my ', 'where are my ', 'where is the ', 'find the ', 'i need my ', 'locate my ', 'locate the ', 'show me my ', 'show me the ', 'find where my ', "where's my ", "where's the "]
-      for (const f of fillers) { if (t.startsWith(f)) { t = t.slice(f.length); break } }
-      t = t.replace(/[^a-z0-9 ]/g, '').trim()
-      if (!t) { showPanicToast('Say the item name, e.g. "find my passport"'); return }
-      const match = items.find(i => i.name.toLowerCase().includes(t) || i.location.toLowerCase().includes(t) || i.category.toLowerCase().includes(t))
-      if (!match) { showPanicToast(`Could not find "${t}" in any room`); return }
-      if (match.roomId !== currentRoomId) setCurrentRoomId(match.roomId)
-      setGlowingItemId(match.id); setSelectedZone(null)
-      const rm = rooms.find(r => r.id === match.roomId)
-      if (rm) {
-        const z = rm.zones.find(zz => Math.abs(match.zoneX - zz.x) < 15 && Math.abs(match.zoneY - zz.y) < 15)
-        if (z) setSelectedZone(z.id)
-      }
-      if (searchPulseTimer.current) clearTimeout(searchPulseTimer.current)
-      searchPulseTimer.current = setTimeout(() => { setGlowingItemId(null) }, 5000)
-      showPanicToast(`Found: ${match.name} is on the ${match.location}`)
-    }
-    r.onerror = () => { setPanicListening(false); showPanicToast('Mic error. Check permissions.') }
-    r.onend = () => { if (panicListening) setPanicListening(false) }
-    panicRecognitionRef.current = r
-    r.start()
+  function stopScanCamera() {
+    if (scanStreamRef.current) { scanStreamRef.current.getTracks().forEach(t => t.stop()); scanStreamRef.current = null }
   }
 
-  /* ── Camera Scan ── */
-  function startCamera() {
-    setCameraError('')
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
-      .then(stream => setCameraStream(stream))
-      .catch(() => setCameraError('Camera access denied'))
-  }
-
-  function stopCamera() {
-    if (cameraStream) { cameraStream.getTracks().forEach(t => t.stop()); setCameraStream(null) }
-  }
-
-  function captureSnapshot(): string | null {
-    const video = document.getElementById('scan-video') as HTMLVideoElement
-    if (!video || !video.videoWidth) return null
+  function capturePhoto() {
+    const video = scanVideoRef.current
+    if (!video || !video.videoWidth) return
     const c = document.createElement('canvas'); c.width = video.videoWidth; c.height = video.videoHeight
-    const ctx = c.getContext('2d'); if (!ctx) return null
+    const ctx = c.getContext('2d'); if (!ctx) return
     ctx.drawImage(video, 0, 0)
-    return c.toDataURL('image/jpeg', 0.8)
-  }
-
-  function runScan() {
-    setScanning(true); setScanLog(['📸 Initializing camera...', '🔍 Scanning room via AI vision...'])
-    const snap = captureSnapshot()
-    if (snap) { sessionStorage.setItem('last_snapshot', snap); setScanLog(prev => [...prev, '📷 Room snapshot captured']) }
-    const avZones = room.zones
-    const detected = [
-      { name: 'Passport', cat: 'Documents' }, { name: 'Laptop', cat: 'Electronics' }, { name: 'House Keys', cat: 'Keys' },
-    ]
-    let step = 0
-    const interval = setInterval(() => {
-      if (step < detected.length) {
-        const d = detected[step]; const zone = avZones[step % avZones.length]
-        setItems(prev => {
-          const existing = prev.find(i => i.name.toLowerCase() === d.name.toLowerCase() && i.roomId === currentRoomId)
-          if (existing) {
-            setScanLog(l => [...l, `✅ ${d.name} — updated location: ${zone.label}`])
-            return prev.map(i => i.id === existing.id ? { ...i, lastConfirmed: new Date().toISOString(), location: zone.label, zoneX: zone.x, zoneY: zone.y, roomId: currentRoomId } : i)
-          } else {
-            setScanLog(l => [...l, `📦 ${d.name} — new item saved to: ${zone.label}`])
-            return [...prev, { id: crypto.randomUUID().slice(0, 8), name: d.name, location: zone.label, category: d.cat, roomId: currentRoomId, createdAt: formatDate(new Date()), lastConfirmed: new Date().toISOString(), zoneX: zone.x, zoneY: zone.y }]
+    const dataUrl = c.toDataURL('image/jpeg', 0.85)
+    setCapturedImage(dataUrl)
+    setScanMode('captured')
+    stopScanCamera()
+    // Auto-analyze with AI via Cloudflare Worker
+    setScanMode('analyzing')
+    visionScan(dataUrl, userRef.current, room.name, 'Scanned').then(result => {
+      if (result) {
+        setScanResult({
+          name: result.itemName,
+          category: result.suggestedCategory,
+          description: result.description,
+          confidence: result.confidence,
+          features: result.distinctFeatures,
+        })
+        setScanMode('result')
+        // Check if this matches any previously scanned item
+        visionMatch(dataUrl, userRef.current).then(match => {
+          if (match?.match && match.matchedItem) {
+            setScanResult(prev => prev ? {
+              ...prev,
+              name: `${prev.name} (matches: ${match.matchedItem})`,
+              description: `${prev.description} — 🔄 Previously scanned item detected!`,
+            } : prev)
           }
         })
-        step++
       } else {
-        clearInterval(interval); setScanning(false); setScanLog(l => [...l, '✅ Scan complete! Items updated.'])
-        setShowConfetti(true); setTimeout(() => setShowConfetti(false), 1500)
+        setScanResult({ name: '', category: 'Other', description: 'Could not identify — enter details below', confidence: 'low', features: [] })
+        setScanMode('result')
       }
-    }, 800)
+    })
   }
 
-  function startDashboardScan() {
-    const btn = document.getElementById('dash-scan-btn') as HTMLButtonElement
-    if (btn) { btn.disabled = true; btn.innerText = 'Accessing Camera...' }
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
-      .then(stream => {
-        dashScanStream.current = stream
-        const video = document.getElementById('dash-scan-video') as HTMLVideoElement
-        if (video) { video.srcObject = stream; video.play() }
-        if (btn) btn.innerText = 'Scanning Room...'
-        setTimeout(() => { const el = document.getElementById('dash-box-laptop'); if (el) el.style.display = 'block' }, 800)
-        setTimeout(() => { const el = document.getElementById('dash-box-passport'); if (el) el.style.display = 'block' }, 1600)
-        setTimeout(() => { const el = document.getElementById('dash-box-keys'); if (el) el.style.display = 'block' }, 2300)
-        setTimeout(() => {
-          if (dashScanStream.current) { dashScanStream.current.getTracks().forEach(t => t.stop()); dashScanStream.current = null }
-          const detected = [
-            { name: 'Passport', loc: 'Unsorted / Off-Map Items', cat: 'Documents' },
-            { name: 'Laptop', loc: 'Unsorted / Off-Map Items', cat: 'Electronics' },
-            { name: 'House Keys', loc: 'Unsorted / Off-Map Items', cat: 'Keys' },
-          ]
-          setItems(prev => {
-            const next = [...prev]
-            for (const d of detected) {
-              const existing = next.find(i => i.name.toLowerCase() === d.name.toLowerCase() && i.roomId === currentRoomId)
-              if (existing) {
-                const idx = next.indexOf(existing); next[idx] = { ...existing, lastConfirmed: new Date().toISOString() }
-              } else {
-                next.push({ id: crypto.randomUUID().slice(0, 8), name: d.name, location: d.loc, category: d.cat, roomId: currentRoomId, createdAt: formatDate(new Date()), lastConfirmed: new Date().toISOString(), zoneX: 50, zoneY: 50 })
-              }
-            }
-            return next
-          })
-          setShowConfetti(true); setShowCameraScan(false)
-          setTimeout(() => setShowConfetti(false), 1500)
-        }, 3500)
+  function saveScannedItem(name: string, category: string) {
+    if (!capturedImage) return
+    const newItem: ScannedItem = {
+      id: crypto.randomUUID(), name: name || 'Unknown Item', category, location: 'Scanned',
+      imageData: capturedImage, roomId: currentRoomId, zoneX: 50, zoneY: 50,
+      createdAt: formatDate(new Date()), lastConfirmed: new Date().toISOString(),
+      aiDetected: !!scanResult?.name,
+    }
+    setScannedItems(prev => [newItem, ...prev])
+    // Also add to main items
+    addItem(name || 'Unknown Item', 'Scanned', category)
+    setShowConfetti(true); setTimeout(() => setShowConfetti(false), 1500)
+    closeScanner()
+  }
+
+  function deleteScannedItem(id: string) {
+    setScannedItems(prev => prev.filter(s => s.id !== id))
+  }
+
+  function addScannedToMain(item: ScannedItem) {
+    addItem(item.name, item.location, item.category, item.zoneX, item.zoneY)
+    setShowConfetti(true); setTimeout(() => setShowConfetti(false), 1500)
+  }
+
+  function closeScanner() {
+    stopScanCamera(); setScanMode('idle'); setCapturedImage(null); setScanResult(null); setShowCameraScan(false)
+  }
+
+  function retakePhoto() {
+    stopScanCamera(); setCapturedImage(null); setScanResult(null); setScanMode('camera')
+    openScanCamera()
+  }
+
+  function syncHistory() {
+    fetchScanHistory(userRef.current).then(scans => {
+      if (scans.length > 0) {
+        const mapped = scans.map((s: any) => ({
+          id: s.id, name: s.item_name, category: s.suggested_category || 'Other',
+          location: s.location || 'Scanned', imageData: s.image_b64,
+          roomId: currentRoomId, zoneX: 50, zoneY: 50,
+          createdAt: s.created_at, lastConfirmed: s.created_at, aiDetected: true,
+        }))
+        setScannedItems(prev => {
+          const existing = new Set(prev.map(p => p.id))
+          const fresh = mapped.filter((m: any) => !existing.has(m.id))
+          return [...fresh, ...prev]
+        })
+      }
+    })
+  }
+
+  /* ── Chatbot ── */
+  function handleChatSend(e?: React.FormEvent, preset?: string) {
+    e?.preventDefault()
+    const msg = (preset ?? chatInput).trim()
+    if (!msg || chatLoading) return
+    setChatInput('')
+    const userMsg = { role: 'user' as const, content: msg, suggestedIds: [] as string[] }
+    setChatMessages(prev => [...prev, userMsg])
+    setChatLoading(true)
+    // Include the new message in history (chatMessages is stale here)
+    const history = [...chatMessages.map(m => ({ role: m.role, content: m.content })), { role: 'user' as const, content: msg }]
+    sendChat(msg, items, rooms, history)
+      .then(res => {
+        setChatMessages(prev => [...prev, { role: 'assistant', content: res.reply, suggestedIds: res.suggestedItemIds || [] }])
+        /* If AI suggested items, highlight them */
+        if (res.suggestedItemIds?.length > 0) {
+          const firstItem = items.find(i => res.suggestedItemIds.includes(i.id))
+          if (firstItem) {
+            setCurrentRoomId(firstItem.roomId)
+            setGlowingItemId(firstItem.id)
+            setTimeout(() => setGlowingItemId(null), 5000)
+          }
+        }
       })
-      .catch(() => { if (btn) { btn.disabled = false; btn.innerText = '📸 Start Scan' }; alert('Camera access blocked.') })
-  }
-
-  function startCameraScan() {
-    const btn = document.getElementById('start-scan-btn') as HTMLButtonElement
-    if (!btn) return; btn.disabled = true; btn.innerText = 'Accessing Camera...'
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
-      .then(stream => {
-        cameraScanStream.current = stream
-        const video = document.getElementById('onboarding-video') as HTMLVideoElement
-        if (video) { video.srcObject = stream; video.play() }
-        btn.innerText = 'Scanning Room...'
-        setTimeout(() => { const el = document.getElementById('box-laptop'); if (el) el.style.display = 'block' }, 800)
-        setTimeout(() => { const el = document.getElementById('box-passport'); if (el) el.style.display = 'block' }, 1600)
-        setTimeout(() => { const el = document.getElementById('box-keys'); if (el) el.style.display = 'block' }, 2300)
-        setTimeout(() => {
-          if (cameraScanStream.current) { cameraScanStream.current.getTracks().forEach(t => t.stop()); cameraScanStream.current = null }
-          setOnboardingStep(2)
-        }, 3500)
+      .catch(() => {
+        setChatMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, something went wrong. Please try again.', suggestedIds: [] }])
       })
-      .catch(() => { btn.disabled = false; btn.innerText = 'Retry 3-Sec Scan'; alert('Camera access blocked.') })
-  }
-
-  function completeOnboarding() {
-    const top3 = [
-      { name: 'Passport', loc: 'Unsorted / Off-Map Items', cat: 'Documents', zoneX: 50, zoneY: 50, roomId: rooms[0]?.id || '' },
-      { name: 'Laptop', loc: 'Unsorted / Off-Map Items', cat: 'Electronics', zoneX: 50, zoneY: 50, roomId: rooms[0]?.id || '' },
-      { name: 'House Keys', loc: 'Unsorted / Off-Map Items', cat: 'Keys', zoneX: 50, zoneY: 50, roomId: rooms[0]?.id || '' },
-    ]
-    setItems(top3.map(t => ({
-      id: crypto.randomUUID().slice(0, 8), name: t.name, location: t.loc, category: t.cat,
-      roomId: t.roomId, createdAt: formatDate(new Date()), lastConfirmed: new Date().toISOString(), zoneX: t.zoneX, zoneY: t.zoneY,
-    })))
-    setCurrentRoomId(rooms[0]?.id || '')
-    localStorage.setItem('ilf_onboarded', 'true')
-    setShowOnboarding(false)
+      .finally(() => setChatLoading(false))
   }
 
   /* ── Prompt overlay ── */
@@ -586,7 +762,9 @@ export default function App() {
   useEffect(() => {
     return () => {
       if (recognitionRef.current) try { recognitionRef.current.abort() } catch {}
-      if (panicRecognitionRef.current) try { panicRecognitionRef.current.abort() } catch {}
+      if (semanticTimer.current) clearTimeout(semanticTimer.current)
+      if (searchPulseTimer.current) clearTimeout(searchPulseTimer.current)
+      if (pulseTimer.current) clearTimeout(pulseTimer.current)
     }
   }, [])
 
@@ -604,14 +782,14 @@ export default function App() {
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-semibold text-gray-700 dark:text-gray-200">Email</label>
               <input type="email" placeholder="you@example.com" value={authEmail} onChange={e => setAuthEmail(e.target.value)}
-                className="px-4 py-3 border border-gray-200 dark:border-gray-600 rounded-lg text-sm outline-none focus:border-indigo-500 focus:ring-3 focus:ring-indigo-500/12 bg-white dark:bg-gray-700 dark:text-gray-100 transition-colors" required />
+                className="px-4 py-3 border border-gray-200 dark:border-gray-600 rounded-lg text-sm outline-none focus:border-indigo-500 focus:ring-3 focus:ring-indigo-500/40 bg-white dark:bg-gray-700 dark:text-gray-100 transition-colors" required />
             </div>
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-semibold text-gray-700 dark:text-gray-200">Password</label>
               <input type="password" placeholder="Enter password" value={authPassword} onChange={e => setAuthPassword(e.target.value)}
-                className="px-4 py-3 border border-gray-200 dark:border-gray-600 rounded-lg text-sm outline-none focus:border-indigo-500 focus:ring-3 focus:ring-indigo-500/12 bg-white dark:bg-gray-700 dark:text-gray-100 transition-colors" required />
+                className="px-4 py-3 border border-gray-200 dark:border-gray-600 rounded-lg text-sm outline-none focus:border-indigo-500 focus:ring-3 focus:ring-indigo-500/40 bg-white dark:bg-gray-700 dark:text-gray-100 transition-colors" required />
             </div>
-            {authError && <p className="text-red-500 dark:text-red-400 text-sm text-center bg-red-50 dark:bg-red-900/30 py-2 px-3 rounded-md">{authError}</p>}
+            {authError && <p role="alert" className="text-red-500 dark:text-red-400 text-sm text-center bg-red-50 dark:bg-red-900/30 py-2 px-3 rounded-md">{authError}</p>}
             <button type="submit" className="w-full py-3 bg-indigo-500 hover:bg-indigo-600 text-white font-semibold rounded-lg transition-all hover:-translate-y-0.5 hover:shadow-md active:translate-y-0 cursor-pointer touch-manipulation">
               {isSignUp ? 'Create Account' : 'Sign In'}
             </button>
@@ -639,7 +817,14 @@ export default function App() {
               <div id="box-laptop" className="hidden absolute border-2 border-blue-500 bg-blue-500/10 rounded px-1.5 py-0.5 text-blue-500 text-[10px] font-bold" style={{ top: '25%', left: '45%', width: '45%', height: '45%' }}>Laptop</div>
               <div id="box-keys" className="hidden absolute border-2 border-yellow-500 bg-yellow-500/10 rounded px-1.5 py-0.5 text-yellow-500 text-[10px] font-bold" style={{ top: '75%', left: '35%', width: '15%', height: '12%' }}>Keys</div>
             </div>
-            <button id="start-scan-btn" onClick={startCameraScan} className="mt-5 bg-blue-500 text-white border-none px-8 py-3 font-bold rounded-lg cursor-pointer transition-colors hover:bg-blue-600 touch-manipulation">Start 3-Sec Scan</button>
+            <button id="start-scan-btn" onClick={() => {
+              const btn = document.getElementById('start-scan-btn') as HTMLButtonElement
+              if (!btn) return; btn.disabled = true; btn.innerText = 'Scanning Room...'
+              setTimeout(() => { const el = document.getElementById('box-laptop'); if (el) el.style.display = 'block' }, 800)
+              setTimeout(() => { const el = document.getElementById('box-passport'); if (el) el.style.display = 'block' }, 1600)
+              setTimeout(() => { const el = document.getElementById('box-keys'); if (el) el.style.display = 'block' }, 2300)
+              setTimeout(() => { setOnboardingStep(2) }, 3500)
+            }} className="mt-5 bg-blue-500 text-white border-none px-8 py-3 font-bold rounded-lg cursor-pointer transition-colors hover:bg-blue-600 touch-manipulation">Start 3-Sec Scan</button>
           </div>
         </div>
       )
@@ -652,16 +837,16 @@ export default function App() {
           <div className="bg-slate-800 rounded-xl w-full p-4 text-left mb-6 border border-slate-700">
             <div className="flex items-center mb-3 text-green-400"><span className="mr-2">✅</span> 🪪 Passport <span className="ml-auto text-xs text-slate-500">Detected</span></div>
             <div className="flex items-center mb-3 text-green-400"><span className="mr-2">✅</span> 💻 Laptop <span className="ml-auto text-xs text-slate-500">Detected</span></div>
-            <div className="flex items-center text-green-400"><span className="mr-2">✅</span> 🔑 House Keys <span className="ml-auto text-xs text-slate-500">Detected</span></div>
+              <div className="flex items-center text-green-400"><span className="mr-2">✅</span> 🔑 House Keys <span className="ml-auto text-xs text-slate-500">Detected</span></div>
           </div>
-          <button onClick={completeOnboarding} className="w-full bg-green-500 hover:bg-green-600 text-white border-none py-3.5 font-bold rounded-lg cursor-pointer text-base transition-colors touch-manipulation">Pin My Top 3 Essentials &amp; Start</button>
+          <button onClick={() => { setShowOnboarding(false); localStorage.setItem('ilf_onboarded', '1'); save() }} className="w-full bg-green-500 hover:bg-green-600 text-white border-none py-3.5 font-bold rounded-lg cursor-pointer text-base transition-colors touch-manipulation">Pin My Top 3 Essentials &amp; Start</button>
         </div>
       </div>
     )
   }
 
   return (
-    <div className={`min-h-screen ${darkMode ? 'dark' : ''}`}>
+    <div className="min-h-screen">
       <div className="bg-gray-50 dark:bg-[#0f172a] text-gray-900 dark:text-gray-100 transition-colors min-h-screen" style={{ fontFamily: '-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif' }}>
         <div className="max-w-[1200px] mx-auto p-5 max-md:p-3 max-md:pb-20 animate-[fadeIn_0.3s_ease-out]">
           {/* ── Header ── */}
@@ -670,9 +855,15 @@ export default function App() {
               <h1 className="text-xl font-bold bg-gradient-to-r from-indigo-500 to-purple-500 bg-clip-text text-transparent max-md:text-base">📍 Item Location Finder</h1>
               <div className="flex items-center gap-1.5 flex-wrap">
                 <span className="text-xs text-gray-500 dark:text-gray-400 bg-white dark:bg-gray-800 px-3 py-1.5 rounded-md border border-gray-200 dark:border-gray-700 max-md:hidden">{user?.email}</span>
-                <button onClick={() => setShowMobileMap(true)} className="md:hidden w-9 h-9 flex items-center justify-center bg-transparent border border-gray-200 dark:border-gray-700 rounded-lg text-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors touch-manipulation">🗺️</button>
-                <button onClick={toggleDark} className="w-9 h-9 flex items-center justify-center bg-transparent border border-gray-200 dark:border-gray-700 rounded-lg text-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors touch-manipulation" title="Toggle dark mode">{darkMode ? '☀️' : '🌙'}</button>
-                <button onClick={() => { setShowCameraScan(true); setShowAddModal(false) }} className="hidden md:inline-flex px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-sm font-semibold cursor-pointer transition-all hover:scale-103 hover:shadow-md active:scale-100 touch-manipulation">📸 Scan Room</button>
+                <button aria-label="Open map" onClick={() => setShowMobileMap(true)} className="md:hidden w-9 h-9 flex items-center justify-center bg-transparent border border-gray-200 dark:border-gray-700 rounded-lg text-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors touch-manipulation">🗺️</button>
+                <button aria-label="Toggle dark mode" onClick={toggleDark} className="w-9 h-9 flex items-center justify-center bg-transparent border border-gray-200 dark:border-gray-700 rounded-lg text-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors touch-manipulation" title="Toggle dark mode">{darkMode ? '☀️' : '🌙'}</button>
+                <button onClick={() => { setShowScannedGallery(true); syncHistory() }} className="relative flex items-center gap-1 px-3 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg text-sm cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors touch-manipulation">
+                  🖼️
+                  {scannedItems.length > 0 && (
+                    <span className="absolute -top-1.5 -right-1.5 w-4.5 h-4.5 rounded-full bg-indigo-500 text-white text-[10px] font-bold flex items-center justify-center">{scannedItems.length}</span>
+                  )}
+                </button>
+                <button onClick={() => { setShowCameraScan(true); openScanCamera() }} className="hidden md:inline-flex px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-sm font-semibold cursor-pointer transition-all hover:scale-103 hover:shadow-md active:scale-100 touch-manipulation">📸 Scan Item</button>
                 <button onClick={() => { setShowAddModal(true); setEditingItem(null) }} className="px-3 py-2 bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg text-sm font-semibold cursor-pointer transition-all hover:-translate-y-0.5 hover:shadow-md active:translate-y-0 touch-manipulation">+ Add Item</button>
                 <button onClick={signOut} className="px-3 py-2 bg-transparent text-gray-500 dark:text-gray-400 border border-gray-200 dark:border-gray-700 rounded-lg text-sm cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-700 dark:hover:text-gray-200 transition-colors touch-manipulation">Sign Out</button>
               </div>
@@ -707,66 +898,107 @@ export default function App() {
             {/* Search Bar */}
             <div className="relative mb-1" ref={el => { if (el) { /* container ref for dropdown positioning */ } }}>
               <input ref={searchRef} type="text" placeholder={`Search in ${room.name}...`} value={searchQuery}
-                onChange={e => { setSearchQuery(e.target.value); if (e.target.value) handleSearch(e.target.value); else { setGlowingItemId(null); setSemanticResults([]) } }}
-                onKeyDown={e => { if (e.key === 'Enter' && searchQuery) { const fuseRes = fuse.search(searchQuery); if (fuseRes.length > 0) selectSearchResult(fuseRes[0].item) } }}
+                onChange={e => { setSearchQuery(e.target.value); if (e.target.value) handleSearch(e.target.value); else { setGlowingItemId(null); setGlowingZoneId(null); setGlowingRoomIds([]); setAiResults([]) } }}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && searchQuery) {
+                    if (e.currentTarget instanceof HTMLElement) e.currentTarget.blur()
+                    const fuseRes = fuse.search(searchQuery)
+                    if (fuseRes.length > 0) {
+                      const item = fuseRes[0].item
+                      selectAiResult({
+                        itemId: item.id, itemName: item.name, location: item.location, category: item.category,
+                        roomId: item.roomId, roomName: rooms.find(r => r.id === item.roomId)?.name ?? '',
+                        zone: null, score: 0.5,
+                      })
+                    }
+                  }
+                  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                    e.preventDefault()
+                    const items = document.querySelectorAll<HTMLElement>('[data-search-result]')
+                    const idx = Array.from(items).findIndex(el => el === document.activeElement)
+                    const next = e.key === 'ArrowDown' ? Math.min(idx + 1, items.length - 1) : Math.max(idx - 1, 0)
+                    if (items[next]) items[next].focus()
+                  }
+                }}
                 onFocus={() => setSearchFocused(true)}
                 onBlur={() => setTimeout(() => setSearchFocused(false), 200)}
-                className="w-full px-4 py-3 pr-14 border border-gray-200 dark:border-gray-700 rounded-xl text-sm outline-none focus:border-indigo-500 focus:ring-3 focus:ring-indigo-500/10 bg-white dark:bg-gray-800 dark:text-gray-100 transition-colors" />
-              <button onClick={startVoiceSearch} className={`absolute right-9 top-1/2 -translate-y-1/2 bg-none border-none text-base cursor-pointer text-gray-500 dark:text-gray-400 p-1.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors ${isListening ? '!text-red-500 animate-pulse bg-red-500/10' : ''} touch-manipulation`}>{isListening ? '🔴' : '🎤'}</button>
+                className="w-full px-4 py-3 pr-14 border border-gray-200 dark:border-gray-700 rounded-xl text-sm outline-none focus:border-indigo-500 focus:ring-3 focus:ring-indigo-500/40 bg-white dark:bg-gray-800 dark:text-gray-100 transition-colors" />
+              <button aria-label="Voice search" onClick={startVoiceSearch} className={`absolute right-9 top-1/2 -translate-y-1/2 bg-none border-none text-base cursor-pointer text-gray-500 dark:text-gray-400 p-1.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors ${isListening ? '!text-red-500 animate-pulse bg-red-500/10' : ''} touch-manipulation`}>{isListening ? '🔴' : '🎤'}</button>
               {searchQuery && (
-                <button onClick={() => { setSearchQuery(''); setGlowingItemId(null); setSemanticResults([]) }} className="absolute right-2 top-1/2 -translate-y-1/2 bg-none border-none text-base cursor-pointer text-gray-400 p-1 touch-manipulation">✕</button>
+                <button aria-label="Clear search" onClick={() => { setSearchQuery(''); setGlowingItemId(null); setGlowingZoneId(null); setGlowingRoomIds([]); setAiResults([]) }} className="absolute right-2 top-1/2 -translate-y-1/2 bg-none border-none text-base cursor-pointer text-gray-400 p-1 touch-manipulation">✕</button>
               )}
 
-              {/* Kiosk Search Results Dropdown */}
+              {/* ── Kiosk-Style Search Results Dropdown ── */}
               {searchFocused && searchQuery && (
-                <div className="absolute top-full left-0 right-0 mt-1 z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.15)] dark:shadow-[0_8px_32px_rgba(0,0,0,0.4)] overflow-hidden animate-[fadeInUp_0.15s_ease-out]">
+                <div aria-live="polite" className="absolute top-full left-0 right-0 mt-1 z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.15)] dark:shadow-[0_8px_32px_rgba(0,0,0,0.4)] overflow-hidden animate-[fadeInUp_0.15s_ease-out]">
                   {aiThinking && (
                     <div className="flex items-center gap-2 p-3 text-xs text-indigo-500 dark:text-indigo-400 border-b border-gray-100 dark:border-gray-700">
                       <span className="w-3.5 h-3.5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
-                      AI is thinking...
+                      AI Vector Search thinking...
                     </div>
                   )}
-                  {semanticResults.length === 0 && !aiThinking ? (
+                  {aiResults.length === 0 && !aiThinking ? (
                     <div className="p-3 text-xs text-gray-500 dark:text-gray-400 text-center">
                       {searchQuery.length >= 2 ? 'No matches found. AI searching...' : 'Keep typing...'}
                     </div>
                   ) : (
-                    semanticResults.map((item, idx) => {
-                      const r = rooms.find(rr => rr.id === item.roomId)
-                      const isOther = item.roomId !== currentRoomId
+                    aiResults.map((result, idx) => {
+                      const isOther = result.roomId !== currentRoomId
+                      const scorePct = Math.round((result.score ?? 0) * 100)
                       return (
-                        <button key={item.id}
+                        <button key={result.itemId} data-search-result
                           onMouseDown={e => e.preventDefault()}
-                          onClick={() => selectSearchResult(item)}
-                          className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors cursor-pointer border-none touch-manipulation ${
-                            idx === 0 ? 'bg-indigo-50/60 dark:bg-indigo-900/20' : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                          onClick={() => selectAiResult(result)}
+                          className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-all cursor-pointer border-none touch-manipulation ${
+                            idx === 0
+                              ? 'bg-indigo-50/80 dark:bg-indigo-900/30 shadow-[inset_0_0_0_1px_rgba(99,102,241,0.3)]'
+                              : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'
                           } ${isOther ? 'border-l-3 border-l-amber-400' : ''}`}>
-                          <div className="w-8 h-8 rounded-full flex items-center justify-center text-sm flex-shrink-0"
-                            style={{ background: `${pinColor(item.category)}20`, color: pinColor(item.category) }}>
-                            {categoryIcon(item.category)}
+                          <div className="w-9 h-9 rounded-full flex items-center justify-center text-sm flex-shrink-0"
+                            style={{ background: `${pinColor(result.category)}20`, color: pinColor(result.category) }}>
+                            {categoryIcon(result.category)}
                           </div>
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-1.5">
-                              <strong className="text-sm text-gray-900 dark:text-gray-100">{item.name}</strong>
+                              <strong className="text-sm text-gray-900 dark:text-gray-100">{result.itemName}</strong>
                               {idx === 0 && (
-                                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-400 whitespace-nowrap">Best</span>
+                                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-400 whitespace-nowrap">
+                                  {scorePct >= 80 ? '🏆 Best' : 'Best'}
+                                </span>
+                              )}
+                              {result.zone && (
+                                <span className="text-[10px] font-mono px-1 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400 whitespace-nowrap">
+                                  📍 {result.zone.label}
+                                </span>
                               )}
                             </div>
                             <div className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
-                              <span>📍 {item.location}</span>
-                              {isOther && <span className="text-amber-500 font-medium">· {r?.name || 'Other room'} ↺</span>}
+                              <span>📍 {result.location}</span>
+                              <span className="text-gray-300 dark:text-gray-600">·</span>
+                              <span className="text-indigo-500 font-medium">{result.roomName}</span>
+                              {isOther && <span className="text-amber-500 font-medium">↺</span>}
                             </div>
                           </div>
-                          <div className="text-xs text-gray-400 dark:text-gray-500 flex-shrink-0 text-right">
-                            <div className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-700">{item.category}</div>
+                          <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                            <div className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400">{result.category}</div>
+                            {scorePct > 0 && (
+                              <div className="text-[10px] font-mono text-indigo-500 dark:text-indigo-400">
+                                {scorePct}%
+                              </div>
+                            )}
                           </div>
                         </button>
                       )
                     })
                   )}
-                  {semanticResults.length > 0 && (
-                    <div className="px-4 py-2 text-[10px] text-gray-400 dark:text-gray-500 border-t border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/30 text-center">
-                      {semanticResults.length} result{semanticResults.length > 1 ? 's' : ''} · Fuzzy match
+                  {aiResults.length > 0 && (
+                    <div className="px-4 py-2 text-[10px] text-gray-400 dark:text-gray-500 border-t border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/30 text-center flex items-center justify-center gap-3">
+                      <span>{aiResults.length} result{aiResults.length > 1 ? 's' : ''}</span>
+                      <span className="w-1 h-1 rounded-full bg-gray-300 dark:bg-gray-600" />
+                      <span className="flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
+                        AI Vector Search
+                      </span>
                     </div>
                   )}
                 </div>
@@ -789,14 +1021,14 @@ export default function App() {
           {/* ── Room Tabs ── */}
           <div className="flex gap-1.5 mb-3 overflow-x-auto pb-1 flex-shrink-0 room-tabs max-md:overflow-x-auto max-md:snap-x max-md:snap-mandatory max-md:gap-1 max-md:pb-2 max-md:flex-nowrap">
             {rooms.map(r => {
-              const hasGlow = glowingItemId && items.find(i => i.id === glowingItemId)?.roomId === r.id && r.id !== currentRoomId
+              const hasGlow = glowingRoomIds.includes(r.id) || (glowingItemId && items.find(i => i.id === glowingItemId)?.roomId === r.id && r.id !== currentRoomId)
               return (
                 <button key={r.id} onClick={() => switchRoom(r.id)}
                   className={`flex items-center gap-1 px-3.5 py-2 text-xs font-medium whitespace-nowrap rounded-lg border transition-all cursor-pointer flex-shrink-0 max-md:snap-start touch-manipulation ${
                     r.id === currentRoomId
                       ? 'bg-indigo-500 text-white border-indigo-500'
                       : hasGlow
-                        ? 'bg-amber-50 dark:bg-amber-900/30 border-amber-400 dark:border-amber-600 text-amber-700 dark:text-amber-300 shadow-[0_0_12px_rgba(251,191,36,0.3)] animate-pulse'
+                        ? 'bg-amber-50 dark:bg-amber-900/30 border-amber-400 dark:border-amber-600 text-amber-700 dark:text-amber-300 shadow-[0_0_15px_rgba(251,191,36,0.4),0_0_30px_rgba(251,191,36,0.15)] animate-pulse'
                         : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:border-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
                   }`}>
                   {r.name} <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${r.id === currentRoomId ? 'bg-white/20' : hasGlow ? 'bg-amber-200 dark:bg-amber-800 text-amber-800 dark:text-amber-200' : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400'}`}>{items.filter(i => i.roomId === r.id).length}</span>
@@ -884,16 +1116,16 @@ export default function App() {
                               <span>{timeAgo(item.lastConfirmed)}</span>
                             </div>
                             {pct < 86 && (
-                              <button onClick={() => { setGlowingItemId(item.id); showPanicToast(`Re-scan suggested for ${item.name}`); if (searchPulseTimer.current) clearTimeout(searchPulseTimer.current); searchPulseTimer.current = setTimeout(() => setGlowingItemId(null), 4000) }}
+                              <button onClick={() => { setGlowingItemId(item.id); if (searchPulseTimer.current) clearTimeout(searchPulseTimer.current); searchPulseTimer.current = setTimeout(() => setGlowingItemId(null), 4000) }}
                                 className="text-[10px] text-indigo-500 font-medium hover:underline cursor-pointer bg-none border-none touch-manipulation">⟳ Re-scan now</button>
                             )}
                             <div className="flex items-center gap-1">
-                              <button onClick={() => { setGlowingItemId(item.id); if (pulseTimer.current) clearTimeout(pulseTimer.current); pulseTimer.current = setTimeout(() => setGlowingItemId(null), 3000) }}
-                                className="w-7 h-7 flex items-center justify-center rounded-md border border-gray-200 dark:border-gray-600 text-xs cursor-pointer bg-transparent hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors touch-manipulation" title="Show on map">📍</button>
-                              <button onClick={() => { setEditingItem(item); setShowAddModal(true) }}
-                                className="w-7 h-7 flex items-center justify-center rounded-md border border-gray-200 dark:border-gray-600 text-xs cursor-pointer bg-transparent hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors touch-manipulation" title="Edit">✏️</button>
-                              <button onClick={() => { if (confirm('Delete this item?')) deleteItem(item.id) }}
-                                className="w-7 h-7 flex items-center justify-center rounded-md border border-red-200 dark:border-red-900 text-xs cursor-pointer bg-transparent hover:bg-red-50 dark:hover:bg-red-900/30 text-red-500 transition-colors touch-manipulation" title="Delete">🗑️</button>
+                              <button aria-label="Show on map" onClick={() => { setGlowingItemId(item.id); if (pulseTimer.current) clearTimeout(pulseTimer.current); pulseTimer.current = setTimeout(() => setGlowingItemId(null), 3000) }}
+                                className="w-11 h-11 flex items-center justify-center rounded-md border border-gray-200 dark:border-gray-600 text-sm cursor-pointer bg-transparent hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors touch-manipulation" title="Show on map">📍</button>
+                              <button aria-label="Edit item" onClick={() => { setEditingItem(item); setShowAddModal(true) }}
+                                className="w-11 h-11 flex items-center justify-center rounded-md border border-gray-200 dark:border-gray-600 text-sm cursor-pointer bg-transparent hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors touch-manipulation" title="Edit">✏️</button>
+                              <button aria-label="Delete item" onClick={() => { if (confirm('Delete this item?')) deleteItem(item.id) }}
+                                className="w-11 h-11 flex items-center justify-center rounded-md border border-red-200 dark:border-red-900 text-sm cursor-pointer bg-transparent hover:bg-red-50 dark:hover:bg-red-900/30 text-red-500 transition-colors touch-manipulation" title="Delete">🗑️</button>
                             </div>
                           </div>
                         </div>
@@ -925,7 +1157,7 @@ export default function App() {
                         <div key={zone.id}
                           className={`drag-zone absolute -translate-x-1/2 -translate-y-1/2 px-2.5 py-1.5 rounded-lg cursor-pointer transition-all select-none min-w-[60px] ${
                             selectedZone === zone.id ? 'bg-indigo-500/20 border-indigo-500' : 'bg-indigo-500/10 border-indigo-500/30'
-                          } ${hasGlowing ? '!border-indigo-500 !shadow-[0_0_0_3px_rgba(99,102,241,0.2),0_0_20px_rgba(99,102,241,0.15)] animate-pulse' : ''}`}
+                          } ${glowingZoneId === zone.id ? '!border-emerald-400 !shadow-[0_0_15px_rgba(16,185,129,0.5),0_0_30px_rgba(16,185,129,0.2)] !bg-emerald-500/20 !z-10' : ''} ${hasGlowing ? '!border-indigo-500 !shadow-[0_0_0_3px_rgba(99,102,241,0.2),0_0_20px_rgba(99,102,241,0.15)] animate-pulse' : ''}`}
                           data-zone={zone.id} data-room-id={room.id}
                           style={{ left: `${zone.x}%`, top: `${zone.y}%`, border: '1px dashed', ...(zoneColor ? { borderColor: zoneColor, background: `${zoneColor}15` } : {}) }}
                           onMouseDown={e => { if (!(e.target as HTMLElement).closest('.map-pin')) startDrag(e.currentTarget) }}
@@ -980,7 +1212,7 @@ export default function App() {
           <div className="fixed inset-0 z-[60] bg-white dark:bg-gray-800 flex flex-col animate-[fadeIn_0.2s_ease-out] md:hidden">
             <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
               <h3 className="text-lg font-semibold">🗺️ {room.name}</h3>
-              <button onClick={() => setShowMobileMap(false)} className="bg-none border-none text-lg cursor-pointer text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 p-1 rounded transition-colors touch-manipulation">✕</button>
+              <button aria-label="Close map" onClick={() => setShowMobileMap(false)} className="bg-none border-none text-lg cursor-pointer text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 p-1 rounded transition-colors touch-manipulation">✕</button>
             </div>
             <div className="flex-1 p-4 overflow-auto">
               <div className="relative w-full aspect-[4/3] min-h-[300px] bg-gray-50 dark:bg-gray-900 border-2 border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden room-border">
@@ -1010,38 +1242,213 @@ export default function App() {
           </div>
         )}
 
-        {/* Camera Scan Overlay */}
+        {/* ── AI Vision Scanner Overlay ── */}
         {showCameraScan && (
-          <div className="fixed inset-0 z-[9999] bg-[rgba(15,23,42,0.96)] flex items-center justify-center p-4 animate-[fadeIn_0.25s_ease-out]"
-            onClick={e => { if (e.target === e.currentTarget) { if (dashScanStream.current) { dashScanStream.current.getTracks().forEach(t => t.stop()); dashScanStream.current = null }; setShowCameraScan(false) } }}>
+          <div role="dialog" aria-modal="true" aria-label="AI Item Scanner"
+            className="fixed inset-0 z-[9999] bg-[rgba(15,23,42,0.96)] flex items-center justify-center p-4 animate-[fadeIn_0.25s_ease-out]"
+            onClick={e => { if (e.target === e.currentTarget) closeScanner() }}>
             <div className="flex flex-col items-center text-center max-w-md w-full">
+
+              {/* Header */}
               <div className="flex items-center justify-between w-full mb-3">
-                <h2 className="text-slate-100 text-lg">📸 Room Scan</h2>
-                <button onClick={() => { if (dashScanStream.current) { dashScanStream.current.getTracks().forEach(t => t.stop()); dashScanStream.current = null }; setShowCameraScan(false) }}
+                <h2 className="text-slate-100 text-lg">
+                  {scanMode === 'camera' ? '📸 Point & Scan' : scanMode === 'analyzing' ? '🤔 AI Analyzing...' : scanMode === 'result' ? '✅ Scan Result' : '📸 Captured'}
+                </h2>
+                <button aria-label="Close scan" onClick={closeScanner}
                   className="bg-none border-none text-lg cursor-pointer text-slate-400 hover:bg-slate-800 p-1 rounded transition-colors touch-manipulation">✕</button>
               </div>
-              <div className="relative w-full aspect-[4/3] bg-slate-800 rounded-xl overflow-hidden border-2 border-blue-500">
-                <video id="dash-scan-video" autoPlay playsInline muted className="w-full h-full object-cover scale-x-[-1]" />
-                <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-b from-transparent to-blue-500 animate-[scanMotion_2s_linear_infinite]" />
-                <div id="dash-box-passport" className="hidden absolute border-2 border-green-500 bg-green-500/10 rounded px-1 py-0.5 text-green-500 text-[10px] font-bold" style={{ top: '45%', left: '15%', width: '25%', height: '20%' }}>Passport</div>
-                <div id="dash-box-laptop" className="hidden absolute border-2 border-blue-500 bg-blue-500/10 rounded px-1 py-0.5 text-blue-500 text-[10px] font-bold" style={{ top: '25%', left: '45%', width: '45%', height: '45%' }}>Laptop</div>
-                <div id="dash-box-keys" className="hidden absolute border-2 border-yellow-500 bg-yellow-500/10 rounded px-1 py-0.5 text-yellow-500 text-[10px] font-bold" style={{ top: '75%', left: '35%', width: '15%', height: '12%' }}>Keys</div>
-              </div>
-              <p className="text-slate-400 text-sm my-4">Point your camera at your space to detect essentials</p>
-              <button id="dash-scan-btn" onClick={startDashboardScan}
-                className="bg-blue-500 hover:bg-blue-600 text-white border-none px-8 py-3 font-bold rounded-lg cursor-pointer transition-colors touch-manipulation">📸 Start Scan</button>
+
+              {/* ── CAMERA VIEW ── */}
+              {scanMode === 'camera' && (
+                <>
+                  <div className="relative w-full aspect-[4/3] bg-slate-800 rounded-xl overflow-hidden border-2 border-emerald-500">
+                    <video ref={scanVideoRef} autoPlay playsInline muted className="w-full h-full object-cover scale-x-[-1]"
+                      onLoadedMetadata={e => { const v = e.currentTarget; v.play() }} />
+                    <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-b from-transparent to-emerald-500 animate-[scanMotion_2s_linear_infinite]" />
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <div className="w-4/5 h-3/5 border-2 border-dashed border-emerald-400/40 rounded-2xl" />
+                    </div>
+                    <p className="absolute bottom-3 left-0 right-0 text-xs text-slate-400 text-center">Center the item in the frame</p>
+                  </div>
+                  <button onClick={capturePhoto}
+                    className="mt-5 w-16 h-16 rounded-full bg-white border-4 border-emerald-500 flex items-center justify-center cursor-pointer hover:scale-105 transition-transform touch-manipulation">
+                    <div className="w-12 h-12 rounded-full bg-emerald-500" />
+                  </button>
+                  <p className="text-slate-400 text-sm mt-3">Tap to capture</p>
+                </>
+              )}
+
+              {/* ── CAPTURED / ANALYZING ── */}
+              {(scanMode === 'captured' || scanMode === 'analyzing') && capturedImage && (
+                <>
+                  <div className="relative w-full aspect-[4/3] bg-slate-800 rounded-xl overflow-hidden border-2 border-indigo-500">
+                    <img src={capturedImage} alt="Captured" className="w-full h-full object-contain" />
+                    {scanMode === 'analyzing' && (
+                      <div className="absolute inset-0 bg-slate-900/70 flex flex-col items-center justify-center">
+                        <div className="w-10 h-10 border-3 border-indigo-500 border-t-transparent rounded-full animate-spin mb-3" />
+                        <p className="text-slate-300 text-sm font-medium">AI is identifying your item...</p>
+                        <p className="text-slate-500 text-xs mt-1">Analyzing shape, labels, and features</p>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex gap-3 mt-4">
+                    <button onClick={retakePhoto}
+                      className="px-5 py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm cursor-pointer transition-colors touch-manipulation">⟳ Retake</button>
+                  </div>
+                </>
+              )}
+
+              {/* ── RESULT VIEW ── */}
+              {scanMode === 'result' && capturedImage && (
+                <div className="flex flex-col gap-4 w-full">
+                  <div className="relative w-full aspect-[4/3] bg-slate-800 rounded-xl overflow-hidden border-2 border-emerald-500">
+                    <img src={capturedImage} alt="Scanned" className="w-full h-full object-contain" />
+                    {scanResult?.name && (
+                      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-slate-900/90 to-transparent p-4 pt-8">
+                        <div className="flex items-center gap-2 mb-1">
+                          <p className="text-emerald-400 font-bold text-lg">{scanResult.name}</p>
+                          {scanResult.confidence && (
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${
+                              scanResult.confidence === 'high' ? 'bg-emerald-500/20 text-emerald-400' :
+                              scanResult.confidence === 'medium' ? 'bg-amber-500/20 text-amber-400' :
+                              'bg-red-500/20 text-red-400'
+                            }`}>{scanResult.confidence}</span>
+                          )}
+                        </div>
+                        <p className="text-slate-300 text-xs">{scanResult.description}</p>
+                        {scanResult.features && scanResult.features.length > 0 && (
+                          <div className="flex gap-1.5 mt-1.5 flex-wrap">
+                            {scanResult.features.map((f, i) => (
+                              <span key={i} className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-700/60 text-slate-300 border border-slate-600">{f}</span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <form onSubmit={e => {
+                    e.preventDefault()
+                    const fd = new FormData(e.currentTarget)
+                    const name = (fd.get('scan-name') as string) || scanResult?.name || 'Unknown Item'
+                    const cat = (fd.get('scan-cat') as string) || scanResult?.category || 'Other'
+                    saveScannedItem(name, cat)
+                  }} className="flex flex-col gap-3 w-full">
+                    <div className="flex gap-2">
+                      <div className="flex-1">
+                        <label className="text-xs text-slate-400 mb-1 block text-left">Item Name</label>
+                        <input name="scan-name" defaultValue={scanResult?.name || ''} placeholder="Enter item name"
+                          className="w-full px-3 py-2 text-sm bg-slate-800 border border-slate-600 rounded-lg text-slate-100 outline-none focus:border-indigo-500" />
+                      </div>
+                      <div className="w-1/3">
+                        <label className="text-xs text-slate-400 mb-1 block text-left">Category</label>
+                        <select name="scan-cat" defaultValue={scanResult?.category || 'Other'}
+                          className="w-full px-3 py-2 text-sm bg-slate-800 border border-slate-600 rounded-lg text-slate-100 outline-none focus:border-indigo-500">
+                          {['Documents', 'Keys', 'Electronics', 'Warranties', 'Valuables', 'Other'].map(c => <option key={c} value={c}>{c}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button type="button" onClick={retakePhoto}
+                        className="flex-1 px-4 py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm cursor-pointer transition-colors touch-manipulation">⟳ Retake</button>
+                      <button type="submit"
+                        className="flex-[2] px-4 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-sm font-semibold cursor-pointer transition-all touch-manipulation">💾 Save & Add to List</button>
+                    </div>
+                  </form>
+                </div>
+              )}
             </div>
+          </div>
+        )}
+
+        {/* ── Scanned Items Gallery (Categorized) ── */}
+        {showScannedGallery && (
+          <div role="dialog" aria-modal="true" aria-label="Photo library"
+            className="fixed inset-0 z-[9999] bg-[rgba(15,23,42,0.97)] flex flex-col animate-[fadeIn_0.2s_ease-out]"
+            onClick={e => { if (e.target === e.currentTarget) setShowScannedGallery(false) }}>
+            <div className="sticky top-0 z-10 bg-[rgba(15,23,42,0.97)] border-b border-slate-700/50">
+              <div className="flex items-center justify-between p-4 max-w-6xl mx-auto w-full">
+                <h2 className="text-slate-100 text-lg font-semibold">📸 Photo Library ({scannedItems.length})</h2>
+                <div className="flex items-center gap-3">
+                  <button onClick={() => syncHistory()}
+                    className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg cursor-pointer transition-colors touch-manipulation">Sync History</button>
+                  <button aria-label="Close gallery" onClick={() => setShowScannedGallery(false)}
+                    className="bg-none border-none text-lg cursor-pointer text-slate-400 hover:bg-slate-800 p-1.5 rounded transition-colors touch-manipulation">✕</button>
+                </div>
+              </div>
+            </div>
+
+            {scannedItems.length === 0 ? (
+              <div className="flex-1 flex flex-col items-center justify-center text-slate-500">
+                <div className="text-6xl mb-4">📸</div>
+                <p className="text-lg font-medium mb-1">No scanned items yet</p>
+                <p className="text-sm">Use the Scan button to take photos of your items</p>
+              </div>
+            ) : (
+              <div className="flex-1 overflow-y-auto max-w-6xl mx-auto w-full p-4 pt-3">
+                {/* Group by category */}
+                {['Documents', 'Keys', 'Electronics', 'Warranties', 'Valuables', 'Other'].map(cat => {
+                  const group = scannedItems.filter(i => i.category === cat)
+                  if (group.length === 0) return null
+                  return (
+                    <div key={cat} className="mb-6">
+                      <div className="flex items-center gap-2 mb-3 sticky top-0 bg-[rgba(15,23,42,0.95)] py-2 z-[1]">
+                        <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
+                          cat === 'Documents' ? 'bg-blue-500/20 text-blue-400' :
+                          cat === 'Keys' ? 'bg-amber-500/20 text-amber-400' :
+                          cat === 'Electronics' ? 'bg-cyan-500/20 text-cyan-400' :
+                          cat === 'Warranties' ? 'bg-purple-500/20 text-purple-400' :
+                          cat === 'Valuables' ? 'bg-pink-500/20 text-pink-400' :
+                          'bg-slate-500/20 text-slate-400'
+                        }`}>{cat}</span>
+                        <span className="text-slate-500 text-xs">{group.length}</span>
+                        <div className="flex-1 border-t border-slate-700/30" />
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5">
+                        {group.map(item => (
+                          <div key={item.id}
+                            className="bg-slate-800 rounded-xl overflow-hidden border border-slate-700 hover:border-indigo-500/60 hover:shadow-[0_0_15px_rgba(99,102,241,0.2)] transition-all group cursor-pointer">
+                            <div className="aspect-[4/3] bg-slate-700 relative overflow-hidden">
+                              <img src={item.imageData} alt={item.name} className="w-full h-full object-cover" />
+                              {item.aiDetected && (
+                                <span className="absolute top-1.5 left-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-500/80 text-white font-semibold">AI</span>
+                              )}
+                              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/60 transition-colors flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
+                                <button onClick={() => addScannedToMain(item)}
+                                  className="px-2.5 py-1.5 bg-emerald-500 text-white text-[11px] rounded-lg cursor-pointer hover:bg-emerald-600 transition-colors touch-manipulation font-semibold">+ Add</button>
+                                <button onClick={() => { if (confirm('Delete this scan?')) deleteScannedItem(item.id) }}
+                                  className="px-2.5 py-1.5 bg-red-500/80 text-white text-[11px] rounded-lg cursor-pointer hover:bg-red-600 transition-colors touch-manipulation">🗑️</button>
+                              </div>
+                            </div>
+                            <div className="p-2">
+                              <p className="text-slate-100 text-xs font-semibold truncate">{item.name}</p>
+                              <p className="text-slate-500 text-[10px] mt-0.5">{timeAgo(item.lastConfirmed)}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })}
+                {scannedItems.filter(i => !['Documents','Keys','Electronics','Warranties','Valuables','Other'].includes(i.category)).length > 0 && (
+                  <div className="text-center py-6 text-slate-500 text-xs italic">
+                    {scannedItems.filter(i => !['Documents','Keys','Electronics','Warranties','Valuables','Other'].includes(i.category)).length} items in uncategorized
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
         {/* Add/Edit Modal */}
         {showAddModal && (
-          <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-5 animate-[fadeIn_0.2s_ease-out]"
+          <div role="dialog" aria-modal="true" aria-label={editingItem ? 'Edit item' : 'Add new item'}
+            className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-5 animate-[fadeIn_0.2s_ease-out]"
             onClick={e => { if (e.target === e.currentTarget) { setShowAddModal(false); setEditingItem(null) } }}>
             <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-7 w-full max-w-md max-h-[90vh] overflow-y-auto animate-[slideUp_0.25s_ease-out]">
               <div className="flex items-center justify-between mb-6">
                 <h2 className="text-lg font-bold">{editingItem ? 'Edit Item' : 'Add New Item'}</h2>
-                <button onClick={() => { setShowAddModal(false); setEditingItem(null) }}
+                <button aria-label="Close modal" onClick={() => { setShowAddModal(false); setEditingItem(null) }}
                   className="bg-none border-none text-lg cursor-pointer text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 p-1 rounded transition-colors touch-manipulation">✕</button>
               </div>
               <form onSubmit={e => {
@@ -1049,7 +1456,8 @@ export default function App() {
                 const fd = new FormData(e.currentTarget)
                 const name = fd.get('name') as string; const location = fd.get('location') as string; const category = fd.get('category') as string
                 const pin = document.getElementById('mini-pin')
-                const zx = pin ? parseFloat(pin.style.left) : 50; const zy = pin ? parseFloat(pin.style.top) : 50
+                const zx = pin && pin.style.left ? parseFloat(pin.style.left) : (editingItem?.zoneX ?? 50)
+                const zy = pin && pin.style.top ? parseFloat(pin.style.top) : (editingItem?.zoneY ?? 50)
                 if (editingItem) updateItem(editingItem.id, name, location, category)
                 else addItem(name, location, category, zx, zy)
                 setShowAddModal(false); setEditingItem(null)
@@ -1057,17 +1465,17 @@ export default function App() {
                 <div className="flex flex-col gap-1.5">
                   <label className="text-xs font-semibold text-gray-700 dark:text-gray-200">Item Name</label>
                   <input name="name" defaultValue={editingItem?.name || ''} placeholder="e.g. Passport, House Keys" required
-                    className="px-4 py-2.5 border border-gray-200 dark:border-gray-600 rounded-lg text-sm outline-none focus:border-indigo-500 focus:ring-3 focus:ring-indigo-500/12 bg-white dark:bg-gray-700 dark:text-gray-100" />
+                    className="px-4 py-2.5 border border-gray-200 dark:border-gray-600 rounded-lg text-sm outline-none focus:border-indigo-500 focus:ring-3 focus:ring-indigo-500/40 bg-white dark:bg-gray-700 dark:text-gray-100" />
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <label className="text-xs font-semibold text-gray-700 dark:text-gray-200">Location</label>
                   <input name="location" defaultValue={editingItem?.location || ''} placeholder="e.g. Top desk drawer" required
-                    className="px-4 py-2.5 border border-gray-200 dark:border-gray-600 rounded-lg text-sm outline-none focus:border-indigo-500 focus:ring-3 focus:ring-indigo-500/12 bg-white dark:bg-gray-700 dark:text-gray-100" />
+                    className="px-4 py-2.5 border border-gray-200 dark:border-gray-600 rounded-lg text-sm outline-none focus:border-indigo-500 focus:ring-3 focus:ring-indigo-500/40 bg-white dark:bg-gray-700 dark:text-gray-100" />
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <label className="text-xs font-semibold text-gray-700 dark:text-gray-200">Category</label>
                   <select name="category" defaultValue={editingItem?.category || ''} required
-                    className="px-4 py-2.5 border border-gray-200 dark:border-gray-600 rounded-lg text-sm outline-none focus:border-indigo-500 focus:ring-3 focus:ring-indigo-500/12 bg-white dark:bg-gray-700 dark:text-gray-100">
+                    className="px-4 py-2.5 border border-gray-200 dark:border-gray-600 rounded-lg text-sm outline-none focus:border-indigo-500 focus:ring-3 focus:ring-indigo-500/40 bg-white dark:bg-gray-700 dark:text-gray-100">
                     <option value="">Select...</option>
                     {['Documents', 'Keys', 'Electronics', 'Warranties', 'Valuables', 'Other'].map(c => <option key={c} value={c}>{c}</option>)}
                   </select>
@@ -1098,9 +1506,6 @@ export default function App() {
           </div>
         )}
 
-        {/* Scan Modal */}
-        {false && <div id="scan-modal-placeholder" />}
-
         {/* Confetti */}
         {showConfetti && (
           <div className="fixed inset-0 pointer-events-none z-50 overflow-hidden">
@@ -1113,36 +1518,21 @@ export default function App() {
 
         {/* Mobile Bottom Bar */}
         <div className="hidden max-md:flex items-center gap-2 fixed bottom-0 left-0 right-0 z-50 p-2.5 pb-[max(10px,env(safe-area-inset-bottom))] bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 shadow-[0_-4px_12px_rgba(0,0,0,0.06)] backdrop-blur-xl">
-          <button onClick={() => { setShowCameraScan(true); setShowAddModal(false) }}
-            className="flex-1 py-3.5 bg-emerald-500 hover:bg-emerald-600 text-white border-none rounded-xl text-base font-semibold cursor-pointer transition-all shadow-[0_4px_12px_rgba(16,185,129,0.3)] active:scale-97 touch-manipulation">📸 Scan Room</button>
+          <button onClick={() => { setShowCameraScan(true); openScanCamera() }}
+            className="flex-1 py-3.5 bg-emerald-500 hover:bg-emerald-600 text-white border-none rounded-xl text-base font-semibold cursor-pointer transition-all shadow-[0_4px_12px_rgba(16,185,129,0.3)] active:scale-97 touch-manipulation">📸 Scan Item</button>
           <button onClick={startVoiceSearch}
             className={`w-12 h-12 rounded-xl border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 text-xl cursor-pointer flex items-center justify-center transition-colors text-gray-500 dark:text-gray-400 hover:border-gray-400 ${isListening ? '!text-red-500 animate-pulse !border-red-500' : ''} touch-manipulation`}>{isListening ? '🔴' : '🎤'}</button>
         </div>
 
-        {/* Panic Toast */}
-        {panicToast && (
-          <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 bg-red-600 text-white px-6 py-3.5 rounded-xl text-sm font-semibold text-center shadow-[0_8px_32px_rgba(220,38,38,0.35)] max-w-[90vw] animate-[slideUp_0.3s_cubic-bezier(0.4,0,0.2,1)]">
-            {panicToast}
-          </div>
-        )}
-
-        {/* Panic SOS Button */}
-        <button onClick={startPanicVoiceSearch}
-          className={`fixed bottom-22 right-4 z-50 w-16 h-16 max-md:w-14 max-md:h-14 max-md:bottom-22 max-md:right-3 rounded-full bg-red-500 text-white border-3 border-white text-2xl cursor-pointer flex items-center justify-center shadow-[0_4px_20px_rgba(239,68,68,0.5)] transition-all hover:scale-110 active:scale-95 touch-manipulation ${
-            panicListening ? 'panic-pulse shadow-[0_4px_30px_rgba(239,68,68,0.7),0_0_0_12px_rgba(239,68,68,0.15)]' : ''
-          }`}
-          title="Panic Find - say what you lost">
-          {panicListening ? '🔴' : '🆘'}
-        </button>
-
         {/* Inline Prompt */}
         {showPrompt && (
-          <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-5 animate-[fadeIn_0.15s_ease-out]"
+          <div role="dialog" aria-modal="true" aria-label="Prompt"
+            className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-5 animate-[fadeIn_0.15s_ease-out]"
             onClick={e => { if (e.target === e.currentTarget && promptCallback) { promptCallback(null); setShowPrompt(false); setPromptCallback(null) } }}>
             <div className="bg-white dark:bg-gray-800 rounded-xl p-6 w-full max-w-sm shadow-lg animate-[slideUp_0.2s_ease-out]">
               <h3 className="text-base font-semibold mb-4">{promptPlaceholder}</h3>
               <input id="inline-prompt-input" type="text" placeholder="Enter name..." autoComplete="off"
-                className="w-full px-3.5 py-3 text-sm border border-gray-200 dark:border-gray-600 rounded-lg outline-none focus:border-indigo-500 focus:ring-3 focus:ring-indigo-500/12 bg-white dark:bg-gray-700 dark:text-gray-100 mb-4"
+                className="w-full px-3.5 py-3 text-sm border border-gray-200 dark:border-gray-600 rounded-lg outline-none focus:border-indigo-500 focus:ring-3 focus:ring-indigo-500/40 bg-white dark:bg-gray-700 dark:text-gray-100 mb-4"
                 onKeyDown={e => { if (e.key === 'Enter' && promptCallback) { const v = (e.target as HTMLInputElement).value.trim(); promptCallback(v || null); setShowPrompt(false); setPromptCallback(null) } }} />
               <div className="flex gap-2 justify-end">
                 <button onClick={() => { if (promptCallback) { promptCallback(null); setShowPrompt(false); setPromptCallback(null) } }}
@@ -1153,6 +1543,119 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {/* ── Chatbot Sidebar ── */}
+        {/* Floating toggle button (visible when chat is closed) */}
+        {!showChat && (
+          <button onClick={() => { setShowChat(true); setTimeout(() => chatInputRef.current?.focus(), 300) }}
+            className="fixed right-4 bottom-20 z-[9999] w-14 h-14 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 text-white border-none cursor-pointer shadow-[0_4px_20px_rgba(99,102,241,0.5)] hover:shadow-[0_6px_28px_rgba(99,102,241,0.7)] hover:scale-105 active:scale-95 transition-all flex items-center justify-center touch-manipulation animate-[fadeIn_0.3s_ease-out]"
+            aria-label="Open AI chat assistant">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-6 h-6"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+            <div className="absolute -top-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full border-2 border-white dark:border-[#0f172a] animate-pulse" />
+          </button>
+        )}
+
+        {/* Slide-in Panel */}
+        {showChat && (
+          <div className="fixed inset-0 z-[9999] pointer-events-none flex justify-end">
+            {/* Overlay backdrop */}
+            <div className="absolute inset-0 bg-black/40 pointer-events-auto" onClick={() => setShowChat(false)} />
+
+            {/* Chat Panel */}
+            <div className="relative w-full max-w-[400px] h-full pointer-events-auto bg-white dark:bg-gray-900 border-l border-gray-200 dark:border-gray-700 shadow-[-8px_0_30px_rgba(0,0,0,0.2)] flex flex-col animate-[slideRight_0.3s_cubic-bezier(0.4,0,0.2,1)]">
+              {/* Header */}
+              <div className="shrink-0 flex items-center justify-between px-4 py-3 bg-gradient-to-r from-indigo-500 to-purple-600 text-white">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold">Find My Item</h3>
+                    <p className="text-[10px] text-white/70">AI assistant</p>
+                  </div>
+                </div>
+                <button onClick={() => setShowChat(false)} aria-label="Close chat"
+                  className="bg-white/10 hover:bg-white/20 border-none text-white w-8 h-8 rounded-lg cursor-pointer flex items-center justify-center text-lg transition-colors touch-manipulation">✕</button>
+              </div>
+
+              {/* Messages */}
+              <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3 bg-gray-50 dark:bg-gray-950">
+                {chatMessages.length === 0 && (
+                  <div className="flex-1 flex flex-col items-center justify-center text-center px-4 gap-3">
+                    <div className="w-16 h-16 rounded-2xl bg-indigo-100 dark:bg-indigo-500/20 flex items-center justify-center">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-8 h-8 text-indigo-500"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                    </div>
+                    <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Lost something? 🤔</h4>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 max-w-[280px]">
+                      Ask me where you put anything — I know your inventory! Try "<i>Where are my keys?</i>" or "<i>Show me all documents</i>"
+                    </p>
+                    <div className="flex flex-col gap-1.5 w-full max-w-[260px] mt-2">
+                      {['Where are my keys?', 'Show my passports', 'What electronics do I have?', 'Find recent items'].map(q => (
+                        <button key={q} onClick={() => handleChatSend(undefined, q)}
+                          className="text-left px-3 py-2 text-xs bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg text-gray-600 dark:text-gray-400 hover:border-indigo-400 hover:text-indigo-500 dark:hover:text-indigo-300 transition-colors cursor-pointer touch-manipulation">{q}</button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {chatMessages.map((m, i) => (
+                  <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'} animate-[fadeIn_0.2s_ease-out]`}>
+                    <div className={`max-w-[85%] px-3.5 py-2.5 rounded-2xl text-sm leading-relaxed ${
+                      m.role === 'user'
+                        ? 'bg-indigo-500 text-white rounded-br-md'
+                        : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 rounded-bl-md shadow-sm'
+                    }`}>
+                      <p className="whitespace-pre-wrap">{m.content}</p>
+                      {m.suggestedIds?.length > 0 && (
+                        <div className="mt-2 pt-2 border-t border-gray-200 dark:border-gray-700 flex flex-wrap gap-1">
+                          {m.suggestedIds.map(id => {
+                            const item = items.find(it => it.id === id)
+                            if (!item) return null
+                            return (
+                              <button key={id} onClick={() => {
+                                setCurrentRoomId(item.roomId)
+                                setGlowingItemId(item.id)
+                                setTimeout(() => setGlowingItemId(null), 5000)
+                              }}
+                                className="px-2 py-1 text-[11px] rounded-full bg-indigo-50 dark:bg-indigo-500/20 text-indigo-600 dark:text-indigo-300 font-medium border border-indigo-200 dark:border-indigo-500/30 cursor-pointer hover:bg-indigo-100 dark:hover:bg-indigo-500/30 transition-colors touch-manipulation">
+                                📍 {item.name}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+                {chatLoading && (
+                  <div className="flex justify-start animate-[fadeIn_0.2s_ease-out]">
+                    <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl rounded-bl-md shadow-sm px-4 py-3 flex items-center gap-1.5">
+                      <div className="w-2 h-2 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '0ms' }} />
+                      <div className="w-2 h-2 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '150ms' }} />
+                      <div className="w-2 h-2 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '300ms' }} />
+                    </div>
+                  </div>
+                )}
+                <div ref={chatEndRef} />
+              </div>
+
+              {/* Input */}
+              <form onSubmit={handleChatSend} className="shrink-0 p-3 border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">
+                <div className="flex items-center gap-2">
+                  <input ref={chatInputRef} type="text" value={chatInput}
+                    onChange={e => setChatInput(e.target.value)}
+                    placeholder={chatLoading ? 'Thinking...' : 'Ask about your items...'}
+                    disabled={chatLoading}
+                    className="flex-1 px-4 py-2.5 text-sm border border-gray-200 dark:border-gray-700 rounded-2xl outline-none focus:border-indigo-500 focus:ring-3 focus:ring-indigo-500/40 bg-gray-50 dark:bg-gray-800 dark:text-gray-100 transition-colors disabled:opacity-50" />
+                  <button type="submit" disabled={chatLoading || !chatInput.trim()}
+                    className="w-10 h-10 rounded-full bg-indigo-500 hover:bg-indigo-600 disabled:bg-gray-300 dark:disabled:bg-gray-700 border-none cursor-pointer flex items-center justify-center transition-colors touch-manipulation disabled:cursor-not-allowed shrink-0">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" className="w-4 h-4"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
       </div>
     </div>
   )
