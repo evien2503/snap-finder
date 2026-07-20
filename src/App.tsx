@@ -63,6 +63,36 @@ interface MatchResult {
 }
 
 async function visionScan(base64Image: string, userId: string, roomName = 'Unknown', location = 'Scanned'): Promise<VisionResult | null> {
+  /* AI Gateway with free-last-resort (vision-capable) */
+  if (AI_GATEWAY_KEY) {
+    try {
+      const res = await fetch(AI_GATEWAY_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${AI_GATEWAY_KEY}` },
+        body: JSON.stringify({
+          model: 'mimo-v2.5',
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'text', text: `You are an item identification assistant. Look at this photo and identify the single most prominent item. Return ONLY valid JSON with keys: "itemName", "confidence" ("high"/"medium"/"low"), "distinctFeatures" (array of 2-4 strings), "suggestedCategory" (one of: Documents, Keys, Electronics, Valuables, Warranties, Other), "description" (one short sentence). Example: {"itemName":"Passport","confidence":"high","distinctFeatures":["Red cover","Gold emblem"],"suggestedCategory":"Documents","description":"A travel document kept in a drawer"}` },
+              { type: 'image_url', image_url: { url: base64Image } },
+            ],
+          }],
+          max_tokens: 500,
+        }),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        const raw = (data.choices?.[0]?.message?.content || data.choices?.[0]?.message?.reasoning_content || '').trim()
+        if (raw) {
+          const jsonMatch = raw.match(/\{[\s\S]*\}/)
+          if (jsonMatch) return JSON.parse(jsonMatch[0])
+        }
+      }
+    } catch { /* fall through to worker */ }
+  }
+
+  /* Fallback: Cloudflare Worker */
   try {
     const res = await fetch(`${AI_SCAN_URL}/api/scan`, {
       method: 'POST',
@@ -105,7 +135,7 @@ async function fetchScanHistory(userId: string): Promise<any[]> {
   }
 }
 
-interface ChatResponse { reply: string; suggestedItemIds: string[] }
+interface ChatResponse { reply: string; reasoning?: string; suggestedItemIds: string[] }
 
 /* ── AI Chatbot — AI Gateway (OpenAI-compatible) ── */
 const AI_GATEWAY_URL = 'https://ai-gateway.guidesify.com/v1/chat/completions'
@@ -130,11 +160,17 @@ async function sendChat(message: string, items: Item[], rooms: Room[], history: 
   const systemPrompt = `You are a lost-item assistant. Help users find things by searching their inventory.
 
 RULES:
-- Be concise and friendly (2-4 sentences max).
+- First, think step-by-step inside <reasoning> tags (what the user wants, which items match, where they are).
+- Then provide the answer inside <answer> tags.
+- Be concise and friendly in the answer (2-4 sentences max).
 - If an item is in the inventory, tell them EXACTLY where it is (room + location).
 - If not found, suggest where they might keep it based on the item category.
 - For category queries, list ALL matching items with their locations.
-- Include item tracking IDs as [id:UUID] so the app can highlight them.${inventoryContext}`
+- Include item tracking IDs as [id:UUID] so the app can highlight them.
+
+Example output:
+<reasoning>The user is asking about their keys. Looking at the inventory, I see "House Keys" in the Living Room on the Coffee Table.</reasoning>
+<answer>Your keys are in the **Living Room** on the Coffee Table. I'd check the bowl by the TV remote. 🔑</answer>${inventoryContext}`
 
   const messages = [
     { role: 'system', content: systemPrompt },
@@ -143,34 +179,32 @@ RULES:
   ]
 
   try {
-    // Try models in order: gpt-4o-mini (known working), then deepseek alternatives
-    const models = ['deepseek-v4-flash-free', 'deepseek-v4-pro', 'free', 'gpt-4o-mini']
-    let lastError = ''
-    for (const model of models) {
-      try {
-        const res = await fetch(AI_GATEWAY_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${AI_GATEWAY_KEY}` },
-          body: JSON.stringify({ model, messages, max_tokens: 500, temperature: 0.7 }),
-        })
-        if (res.ok) {
-          const data = await res.json()
-          const content = data.choices?.[0]?.message?.content?.trim()
-          if (content) {
-            /* Extract [id:...] tags for item highlighting */
-            const idRegex = /\[id:([^\]]+)\]/g
-            const suggestedItemIds: string[] = []
-            let m
-            while ((m = idRegex.exec(content)) !== null) suggestedItemIds.push(m[1])
-            const cleanReply = content.replace(/\[id:[^\]]+\]/g, '').trim()
-            return { reply: cleanReply, suggestedItemIds }
-          }
-        }
-        const errText = await res.text()
-        lastError = `${res.status}: ${errText.slice(0, 100)}`
-      } catch { /* try next model */ }
+    const res = await fetch(AI_GATEWAY_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${AI_GATEWAY_KEY}` },
+      body: JSON.stringify({ model: 'free-last-resort', messages, max_tokens: 800, temperature: 0.7 }),
+    })
+    if (!res.ok) {
+      return { reply: 'AI assistant unavailable right now. Please try again.', suggestedItemIds: [] }
     }
-    return { reply: `AI unavailable (tried ${models.length} models). Last error: ${lastError || 'network'}`, suggestedItemIds: [] }
+    const data = await res.json()
+    const rawContent = data.choices?.[0]?.message?.content?.trim() || ''
+    if (!rawContent) return { reply: 'AI returned an empty response. Please try again.', suggestedItemIds: [] }
+
+    /* Parse <reasoning> and <answer> tags */
+    const reasoningMatch = rawContent.match(/<reasoning>([\s\S]*?)<\/reasoning>/)
+    const answerMatch = rawContent.match(/<answer>([\s\S]*?)<\/answer>/)
+    const reasoning = reasoningMatch ? reasoningMatch[1].trim() : undefined
+    const answer = answerMatch ? answerMatch[1].trim() : rawContent.replace(/<reasonation>[\s\S]*?<\/reasonation>/g, '').replace(/<reasoning>[\s\S]*?<\/reasoning>/g, '').trim()
+
+    /* Extract [id:...] tags for item highlighting */
+    const idRegex = /\[id:([^\]]+)\]/g
+    const suggestedItemIds: string[] = []
+    let m
+    while ((m = idRegex.exec(answer)) !== null) suggestedItemIds.push(m[1])
+    const cleanReply = answer.replace(/\[id:[^\]]+\]/g, '').trim()
+
+    return { reply: cleanReply || 'I found some information for you.', reasoning, suggestedItemIds }
   } catch {
     return { reply: 'Sorry, could not reach the AI service. Please try again.', suggestedItemIds: [] }
   }
@@ -311,7 +345,7 @@ export default function App() {
   const [onboardingStep, setOnboardingStep] = useState<1 | 2>(1)
   const [showMobileMap, setShowMobileMap] = useState(false)
   const [showChat, setShowChat] = useState(false)
-  const [chatMessages, setChatMessages] = useState<Array<{role:'user'|'assistant';content:string;suggestedIds:string[]}>>([])
+  const [chatMessages, setChatMessages] = useState<Array<{role:'user'|'assistant';content:string;reasoning?:string;suggestedIds:string[]}>>([])
   const [chatLoading, setChatLoading] = useState(false)
   const [chatInput, setChatInput] = useState('')
   const chatEndRef = useRef<HTMLDivElement>(null)
@@ -700,7 +734,7 @@ export default function App() {
     const history = [...chatMessages.map(m => ({ role: m.role, content: m.content })), { role: 'user' as const, content: msg }]
     sendChat(msg, items, rooms, history)
       .then(res => {
-        setChatMessages(prev => [...prev, { role: 'assistant', content: res.reply, suggestedIds: res.suggestedItemIds || [] }])
+        setChatMessages(prev => [...prev, { role: 'assistant', content: res.reply, reasoning: res.reasoning, suggestedIds: res.suggestedItemIds || [] }])
         /* If AI suggested items, highlight them */
         if (res.suggestedItemIds?.length > 0) {
           const firstItem = items.find(i => res.suggestedItemIds.includes(i.id))
@@ -1598,7 +1632,20 @@ export default function App() {
                   </div>
                 )}
                 {chatMessages.map((m, i) => (
-                  <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'} animate-[fadeIn_0.2s_ease-out]`}>
+                  <div key={i} className={`flex flex-col ${m.role === 'user' ? 'items-end' : 'items-start'} animate-[fadeIn_0.25s_ease-out]`}>
+                    {/* Reasoning block (assistant only) */}
+                    {m.role === 'assistant' && m.reasoning && (
+                      <details className="max-w-[90%] mb-1 group">
+                        <summary className="text-[11px] text-amber-600 dark:text-amber-400 font-medium cursor-pointer select-none flex items-center gap-1.5 opacity-70 hover:opacity-100 transition-opacity">
+                          <span className="inline-block w-3.5 h-3.5 rounded-full bg-amber-100 dark:bg-amber-500/20 flex items-center justify-center text-[9px]">💭</span>
+                          <span>Reasoned</span>
+                          <span className="text-[9px] opacity-50 group-open:rotate-180 transition-transform">▾</span>
+                        </summary>
+                        <div className="mt-1.5 p-2.5 rounded-lg bg-amber-50/80 dark:bg-amber-500/5 border border-amber-200/60 dark:border-amber-500/20 text-xs text-amber-800 dark:text-amber-300 leading-relaxed whitespace-pre-wrap italic">
+                          {m.reasoning}
+                        </div>
+                      </details>
+                    )}
                     <div className={`max-w-[85%] px-3.5 py-2.5 rounded-2xl text-sm leading-relaxed ${
                       m.role === 'user'
                         ? 'bg-indigo-500 text-white rounded-br-md'
@@ -1627,7 +1674,24 @@ export default function App() {
                   </div>
                 ))}
                 {chatLoading && (
-                  <div className="flex justify-start animate-[fadeIn_0.2s_ease-out]">
+                  <div className="flex flex-col items-start gap-1.5 animate-[fadeIn_0.2s_ease-out]">
+                    {/* Thinking reasoning animation */}
+                    <div className="max-w-[90%] rounded-lg bg-gradient-to-r from-amber-50/80 to-purple-50/80 dark:from-amber-500/5 dark:to-purple-500/5 border border-amber-200/40 dark:border-amber-500/20 p-3 animate-pulse">
+                      <div className="flex items-center gap-2 mb-1.5">
+                        <div className="flex gap-1">
+                          <div className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-bounce" style={{ animationDelay: '0ms' }} />
+                          <div className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-bounce" style={{ animationDelay: '200ms' }} />
+                          <div className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-bounce" style={{ animationDelay: '400ms' }} />
+                        </div>
+                        <span className="text-[10px] font-medium text-amber-600 dark:text-amber-400">AI is thinking...</span>
+                      </div>
+                      <div className="space-y-1.5">
+                        <div className="h-2 bg-amber-200/50 dark:bg-amber-400/10 rounded w-full animate-pulse" />
+                        <div className="h-2 bg-amber-200/50 dark:bg-amber-400/10 rounded w-3/4 animate-pulse" style={{ animationDelay: '100ms' }} />
+                        <div className="h-2 bg-amber-200/50 dark:bg-amber-400/10 rounded w-1/2 animate-pulse" style={{ animationDelay: '200ms' }} />
+                      </div>
+                    </div>
+                    {/* Bouncing dots bubble */}
                     <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl rounded-bl-md shadow-sm px-4 py-3 flex items-center gap-1.5">
                       <div className="w-2 h-2 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '0ms' }} />
                       <div className="w-2 h-2 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '150ms' }} />
