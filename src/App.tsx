@@ -34,11 +34,12 @@ async function aiVectorSearch(
 
 interface Zone { id: string; label: string; x: number; y: number }
 interface Room { id: string; name: string; zones: Zone[] }
-interface Item { id: string; name: string; location: string; category: string; roomId: string; createdAt: string; lastConfirmed: string; zoneX: number; zoneY: number }
+interface Item { id: string; name: string; location: string; category: string; roomId: string; createdAt: string; lastConfirmed: string; zoneX: number; zoneY: number; imageKey?: string }
 interface User { email: string; password: string }
 interface ScannedItem {
   id: string; name: string; category: string; location: string
-  imageData: string  // base64 JPEG
+  imageData?: string  // legacy base64 JPEG (fallback if no R2)
+  imageUrl?: string   // R2-served URL: {AI_SCAN_URL}/api/photos/{r2_key}
   roomId: string; zoneX: number; zoneY: number
   createdAt: string; lastConfirmed: string
   aiDetected: boolean  // true = AI recognized it, false = manual entry
@@ -63,44 +64,30 @@ interface MatchResult {
 }
 
 async function visionScan(base64Image: string, userId: string, roomName = 'Unknown', location = 'Scanned'): Promise<VisionResult | null> {
-  /* AI Gateway with free-last-resort (vision-capable) */
-  if (AI_GATEWAY_KEY) {
-    try {
-      const res = await fetch(AI_GATEWAY_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${AI_GATEWAY_KEY}` },
-        body: JSON.stringify({
-          model: 'mimo-v2.5',
-          messages: [{
-            role: 'user',
-            content: [
-              { type: 'text', text: `You are an item identification assistant. Look at this photo and identify the single most prominent item. Return ONLY valid JSON with keys: "itemName", "confidence" ("high"/"medium"/"low"), "distinctFeatures" (array of 2-4 strings), "suggestedCategory" (one of: Documents, Keys, Electronics, Valuables, Warranties, Other), "description" (one short sentence). Example: {"itemName":"Passport","confidence":"high","distinctFeatures":["Red cover","Gold emblem"],"suggestedCategory":"Documents","description":"A travel document kept in a drawer"}` },
-              { type: 'image_url', image_url: { url: base64Image } },
-            ],
-          }],
-          max_tokens: 500,
-        }),
-      })
-      if (res.ok) {
-        const data = await res.json()
-        const raw = (data.choices?.[0]?.message?.content || data.choices?.[0]?.message?.reasoning_content || '').trim()
-        if (raw) {
-          const jsonMatch = raw.match(/\{[\s\S]*\}/)
-          if (jsonMatch) return JSON.parse(jsonMatch[0])
-        }
-      }
-    } catch { /* fall through to worker */ }
-  }
-
-  /* Fallback: Cloudflare Worker */
+  /* AI Gateway — mimo-v2.5 vision scan (no fallback) */
+  if (!AI_GATEWAY_KEY) return null
   try {
-    const res = await fetch(`${AI_SCAN_URL}/api/scan`, {
+    const res = await fetch(AI_GATEWAY_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image: base64Image, userId, roomName, location }),
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${AI_GATEWAY_KEY}` },
+      body: JSON.stringify({
+        model: 'mimo-v2.5',
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: `You are an item identification assistant. Look at this photo and identify the single most prominent item. Return ONLY valid JSON with keys: "itemName", "confidence" ("high"/"medium"/"low"), "distinctFeatures" (array of 2-4 strings), "suggestedCategory" (one of: Documents, Keys, Electronics, Valuables, Warranties, Other), "description" (one short sentence). Example: {"itemName":"Passport","confidence":"high","distinctFeatures":["Red cover","Gold emblem"],"suggestedCategory":"Documents","description":"A travel document kept in a drawer"}` },
+            { type: 'image_url', image_url: { url: base64Image } },
+          ],
+        }],
+        max_tokens: 500,
+      }),
     })
     if (!res.ok) return null
-    return await res.json()
+    const data = await res.json()
+    const raw = (data.choices?.[0]?.message?.content || data.choices?.[0]?.message?.reasoning_content || '').trim()
+    if (!raw) return null
+    const jsonMatch = raw.match(/\{[\s\S]*\}/)
+    return jsonMatch ? JSON.parse(jsonMatch[0]) : null
   } catch {
     return null
   }
@@ -132,6 +119,45 @@ async function fetchScanHistory(userId: string): Promise<any[]> {
     return data.scans ?? []
   } catch {
     return []
+  }
+}
+
+/* ── R2 Photo Upload / Fetch ── */
+async function uploadPhoto(
+  base64Image: string,
+  userId: string,
+  itemName: string,
+  category: string,
+  roomLocation: string
+): Promise<{ id: string; r2Key: string } | null> {
+  try {
+    /* Convert base64 → Blob → File for FormData */
+    const blobResp = await fetch(base64Image)
+    const blob = await blobResp.blob()
+    const file = new File([blob], `scan_${Date.now()}.jpg`, { type: 'image/jpeg' })
+
+    const form = new FormData()
+    form.append('image', file)
+    form.append('userId', userId)
+    form.append('itemName', itemName)
+    form.append('category', category)
+    form.append('roomLocation', roomLocation)
+
+    const res = await fetch(`${AI_SCAN_URL}/api/photos/upload`, { method: 'POST', body: form })
+    if (!res.ok) return null
+    return await res.json()
+  } catch {
+    return null
+  }
+}
+
+async function fetchPhotos(userId: string): Promise<{ categories: Record<string, any[]>; total: number }> {
+  try {
+    const res = await fetch(`${AI_SCAN_URL}/api/photos?userId=${encodeURIComponent(userId)}`)
+    if (!res.ok) return { categories: {}, total: 0 }
+    return await res.json()
+  } catch {
+    return { categories: {}, total: 0 }
   }
 }
 
@@ -340,6 +366,9 @@ export default function App() {
   const [scanResult, setScanResult] = useState<{ name: string; category: string; description: string; confidence?: string; features?: string[] } | null>(null)
   const [scannedItems, setScannedItems] = useState<ScannedItem[]>([])
   const [showScannedGallery, setShowScannedGallery] = useState(false)
+  const [photosFromServer, setPhotosFromServer] = useState<Record<string, any[]> | null>(null)
+  const [photosLoading, setPhotosLoading] = useState(false)
+  const [assigningPhoto, setAssigningPhoto] = useState<{ id: string; r2Key?: string; imageData?: string } | null>(null)
   const [showConfetti, setShowConfetti] = useState(false)
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [onboardingStep, setOnboardingStep] = useState<1 | 2>(1)
@@ -416,6 +445,16 @@ export default function App() {
 
   useEffect(() => { if (user) save() }, [rooms, items, currentRoomId, scannedItems])
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [chatMessages])
+  useEffect(() => {
+    if (showScannedGallery) {
+      setPhotosLoading(true)
+      fetchPhotos(userRef.current).then(data => {
+        setPhotosFromServer(data.categories)
+        setPhotosLoading(false)
+      })
+      syncHistory()
+    }
+  }, [showScannedGallery])
 
   function loadData(u: User) {
     const raw = localStorage.getItem(storageKey(u.email))
@@ -504,10 +543,10 @@ export default function App() {
     setCurrentRoomId(id); setSelectedZone(null)
   }
 
-  function addItem(name: string, location: string, category: string, zoneX = 50, zoneY = 50) {
+  function addItem(name: string, location: string, category: string, zoneX = 50, zoneY = 50, imageKey?: string) {
     setItems(prev => [...prev, {
       id: crypto.randomUUID(), name, location, category, roomId: currentRoomId,
-      createdAt: formatDate(new Date()), lastConfirmed: new Date().toISOString(), zoneX, zoneY,
+      createdAt: formatDate(new Date()), lastConfirmed: new Date().toISOString(), zoneX, zoneY, imageKey,
     }])
   }
 
@@ -619,12 +658,24 @@ export default function App() {
 
   function openScanCamera() {
     setScanMode('camera'); setCapturedImage(null); setScanResult(null)
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
+    /* Try rear camera first, fallback to any camera */
+    const tryCam = (constraints?: MediaStreamConstraints) =>
+      navigator.mediaDevices.getUserMedia(constraints || { video: true, audio: false })
+    tryCam({ video: { facingMode: 'environment' }, audio: false })
       .then(stream => {
         scanStreamRef.current = stream
         if (scanVideoRef.current) { scanVideoRef.current.srcObject = stream; scanVideoRef.current.play() }
       })
-      .catch(() => { setScanMode('idle'); alert('Camera access denied') })
+      .catch(() => {
+        /* Fallback: try any camera without facingMode */
+        tryCam().then(stream => {
+          scanStreamRef.current = stream
+          if (scanVideoRef.current) { scanVideoRef.current.srcObject = stream; scanVideoRef.current.play() }
+        }).catch(err => {
+          setScanMode('idle')
+          alert('Camera unavailable: ' + err.message)
+        })
+      })
   }
 
   function stopScanCamera() {
@@ -672,15 +723,30 @@ export default function App() {
 
   function saveScannedItem(name: string, category: string) {
     if (!capturedImage) return
+    const newItemId = crypto.randomUUID()
+    const mainItemId = crypto.randomUUID()
+    /* Fire-and-forget R2 upload — never blocks camera close */
+    uploadPhoto(capturedImage, userRef.current, name || 'Unknown Item', category, 'Scanned').then(upload => {
+      if (upload) {
+        setScannedItems(prev => prev.map(p => p.id === newItemId ? { ...p, imageUrl: `${AI_SCAN_URL}/api/photos/${upload.r2Key}`, imageData: undefined } : p))
+        setItems(prev => prev.map(p => p.id === mainItemId ? { ...p, imageKey: upload.r2Key } : p))
+      }
+    }).catch(() => {})
+
     const newItem: ScannedItem = {
-      id: crypto.randomUUID(), name: name || 'Unknown Item', category, location: 'Scanned',
-      imageData: capturedImage, roomId: currentRoomId, zoneX: 50, zoneY: 50,
+      id: newItemId, name: name || 'Unknown Item', category, location: 'Scanned',
+      imageData: capturedImage, // base64 fallback until R2 completes
+      roomId: currentRoomId, zoneX: 50, zoneY: 50,
       createdAt: formatDate(new Date()), lastConfirmed: new Date().toISOString(),
       aiDetected: !!scanResult?.name,
     }
     setScannedItems(prev => [newItem, ...prev])
-    // Also add to main items
-    addItem(name || 'Unknown Item', 'Scanned', category)
+    // Add to main items with known ID (imageKey patched later on R2 completion)
+    setItems(prev => [...prev, {
+      id: mainItemId, name: name || 'Unknown Item', location: 'Scanned', category,
+      roomId: currentRoomId, createdAt: formatDate(new Date()),
+      lastConfirmed: new Date().toISOString(), zoneX: 50, zoneY: 50,
+    }])
     setShowConfetti(true); setTimeout(() => setShowConfetti(false), 1500)
     closeScanner()
   }
@@ -690,8 +756,31 @@ export default function App() {
   }
 
   function addScannedToMain(item: ScannedItem) {
-    addItem(item.name, item.location, item.category, item.zoneX, item.zoneY)
+    /* Extract r2Key from imageUrl if present */
+    let r2Key: string | undefined
+    if (item.imageUrl) {
+      const parts = item.imageUrl.split('/api/photos/')
+      if (parts.length === 2) r2Key = parts[1]
+    }
+    addItem(item.name, item.location, item.category, item.zoneX, item.zoneY, r2Key)
     setShowConfetti(true); setTimeout(() => setShowConfetti(false), 1500)
+  }
+
+  function assignPhotoToItem(photoId: string, r2Key: string | undefined, imageData: string | undefined, targetItemId: string) {
+    if (r2Key) {
+      /* Already has R2 key — assign directly */
+      setItems(prev => prev.map(i => i.id === targetItemId ? { ...i, imageKey: r2Key } : i))
+      setScannedItems(prev => prev.map(s => s.id === photoId ? { ...s, imageUrl: `${AI_SCAN_URL}/api/photos/${r2Key}`, imageData: undefined } : s))
+    } else if (imageData) {
+      /* Legacy base64 — upload to R2 first, then assign */
+      uploadPhoto(imageData, userRef.current, 'Assigned Photo', 'Other', 'Scanned').then(upload => {
+        if (upload) {
+          setItems(prev => prev.map(i => i.id === targetItemId ? { ...i, imageKey: upload.r2Key } : i))
+          setScannedItems(prev => prev.map(s => s.id === photoId ? { ...s, imageUrl: `${AI_SCAN_URL}/api/photos/${upload.r2Key}`, imageData: undefined } : s))
+        }
+      })
+    }
+    setAssigningPhoto(null)
   }
 
   function closeScanner() {
@@ -703,21 +792,31 @@ export default function App() {
     openScanCamera()
   }
 
-  function syncHistory() {
-    fetchScanHistory(userRef.current).then(scans => {
-      if (scans.length > 0) {
-        const mapped = scans.map((s: any) => ({
-          id: s.id, name: s.item_name, category: s.suggested_category || 'Other',
-          location: s.location || 'Scanned', imageData: s.image_b64,
-          roomId: currentRoomId, zoneX: 50, zoneY: 50,
-          createdAt: s.created_at, lastConfirmed: s.created_at, aiDetected: true,
-        }))
-        setScannedItems(prev => {
-          const existing = new Set(prev.map(p => p.id))
-          const fresh = mapped.filter((m: any) => !existing.has(m.id))
-          return [...fresh, ...prev]
-        })
+  async function syncHistory() {
+    const scans = await fetchScanHistory(userRef.current)
+    if (scans.length === 0) return
+
+    const mapped = await Promise.all(scans.map(async (s: any) => {
+      /* Lazy-migrate legacy base64 images to R2 */
+      let imageUrl = s.imageUrl as string | undefined
+      if (s.image_b64 && !imageUrl) {
+        const upload = await uploadPhoto(s.image_b64, userRef.current, s.item_name, s.suggested_category || 'Other', s.location || 'Scanned')
+        if (upload) imageUrl = `${AI_SCAN_URL}/api/photos/${upload.r2Key}`
       }
+      return {
+        id: s.id, name: s.item_name, category: s.suggested_category || 'Other',
+        location: s.location || 'Scanned',
+        imageUrl,
+        imageData: imageUrl ? undefined : (s.image_b64 as string | undefined),
+        roomId: currentRoomId, zoneX: 50, zoneY: 50,
+        createdAt: s.created_at, lastConfirmed: s.created_at, aiDetected: true,
+      } satisfies ScannedItem
+    }))
+
+    setScannedItems(prev => {
+      const existing = new Set(prev.map(p => p.id))
+      const fresh = mapped.filter((m: any) => !existing.has(m.id))
+      return [...fresh, ...prev]
     })
   }
 
@@ -988,9 +1087,19 @@ export default function App() {
                               ? 'bg-indigo-50/80 dark:bg-indigo-900/30 shadow-[inset_0_0_0_1px_rgba(99,102,241,0.3)]'
                               : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'
                           } ${isOther ? 'border-l-3 border-l-amber-400' : ''}`}>
-                          <div className="w-9 h-9 rounded-full flex items-center justify-center text-sm flex-shrink-0"
-                            style={{ background: `${pinColor(result.category)}20`, color: pinColor(result.category) }}>
-                            {categoryIcon(result.category)}
+                          <div className="w-9 h-9 rounded-full flex-shrink-0 overflow-hidden bg-gray-100 dark:bg-gray-700">
+                            {(() => {
+                              const foundItem = items.find(it => it.id === result.itemId)
+                              return foundItem?.imageKey ? (
+                                <img src={`${AI_SCAN_URL}/api/photos/${foundItem.imageKey}`} alt={foundItem.name}
+                                  className="w-full h-full object-cover" />
+                              ) : (
+                                <div className="w-full h-full flex items-center justify-center text-sm"
+                                  style={{ background: `${pinColor(result.category)}20`, color: pinColor(result.category) }}>
+                                  {categoryIcon(result.category)}
+                                </div>
+                              )
+                            })()}
                           </div>
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-1.5">
@@ -1123,10 +1232,17 @@ export default function App() {
                           glowingItemId === item.id ? '!border-indigo-500 !shadow-[0_0_0_2px_rgba(99,102,241,0.15)]' : ''
                         }`}>
                         <div className="flex items-center gap-3">
-                          {/* Category thumbnail */}
-                          <div className="w-10 h-10 rounded-full flex items-center justify-center text-lg flex-shrink-0"
-                            style={{ background: `${pinColor(item.category)}20`, color: pinColor(item.category) }}>
-                            {categoryIcon(item.category)}
+                          {/* Category / Image thumbnail */}
+                          <div className="w-10 h-10 rounded-full flex-shrink-0 overflow-hidden bg-gray-100 dark:bg-gray-700">
+                            {item.imageKey ? (
+                              <img src={`${AI_SCAN_URL}/api/photos/${item.imageKey}`} alt={item.name}
+                                className="w-full h-full object-cover" />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center text-lg"
+                                style={{ background: `${pinColor(item.category)}20`, color: pinColor(item.category) }}>
+                                {categoryIcon(item.category)}
+                              </div>
+                            )}
                           </div>
 
                           {/* Main content */}
@@ -1402,7 +1518,7 @@ export default function App() {
             onClick={e => { if (e.target === e.currentTarget) setShowScannedGallery(false) }}>
             <div className="sticky top-0 z-10 bg-[rgba(15,23,42,0.97)] border-b border-slate-700/50">
               <div className="flex items-center justify-between p-4 max-w-6xl mx-auto w-full">
-                <h2 className="text-slate-100 text-lg font-semibold">📸 Photo Library ({scannedItems.length})</h2>
+                <h2 className="text-slate-100 text-lg font-semibold">📸 Photo Library ({photosFromServer ? Object.values(photosFromServer).reduce((sum: number, arr: any[]) => sum + arr.length, 0) + scannedItems.length : scannedItems.length})</h2>
                 <div className="flex items-center gap-3">
                   <button onClick={() => syncHistory()}
                     className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg cursor-pointer transition-colors touch-manipulation">Sync History</button>
@@ -1412,65 +1528,189 @@ export default function App() {
               </div>
             </div>
 
-            {scannedItems.length === 0 ? (
+            {photosLoading && (
               <div className="flex-1 flex flex-col items-center justify-center text-slate-500">
-                <div className="text-6xl mb-4">📸</div>
-                <p className="text-lg font-medium mb-1">No scanned items yet</p>
-                <p className="text-sm">Use the Scan button to take photos of your items</p>
-              </div>
-            ) : (
-              <div className="flex-1 overflow-y-auto max-w-6xl mx-auto w-full p-4 pt-3">
-                {/* Group by category */}
-                {['Documents', 'Keys', 'Electronics', 'Warranties', 'Valuables', 'Other'].map(cat => {
-                  const group = scannedItems.filter(i => i.category === cat)
-                  if (group.length === 0) return null
-                  return (
-                    <div key={cat} className="mb-6">
-                      <div className="flex items-center gap-2 mb-3 sticky top-0 bg-[rgba(15,23,42,0.95)] py-2 z-[1]">
-                        <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
-                          cat === 'Documents' ? 'bg-blue-500/20 text-blue-400' :
-                          cat === 'Keys' ? 'bg-amber-500/20 text-amber-400' :
-                          cat === 'Electronics' ? 'bg-cyan-500/20 text-cyan-400' :
-                          cat === 'Warranties' ? 'bg-purple-500/20 text-purple-400' :
-                          cat === 'Valuables' ? 'bg-pink-500/20 text-pink-400' :
-                          'bg-slate-500/20 text-slate-400'
-                        }`}>{cat}</span>
-                        <span className="text-slate-500 text-xs">{group.length}</span>
-                        <div className="flex-1 border-t border-slate-700/30" />
-                      </div>
-                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5">
-                        {group.map(item => (
-                          <div key={item.id}
-                            className="bg-slate-800 rounded-xl overflow-hidden border border-slate-700 hover:border-indigo-500/60 hover:shadow-[0_0_15px_rgba(99,102,241,0.2)] transition-all group cursor-pointer">
-                            <div className="aspect-[4/3] bg-slate-700 relative overflow-hidden">
-                              <img src={item.imageData} alt={item.name} className="w-full h-full object-cover" />
-                              {item.aiDetected && (
-                                <span className="absolute top-1.5 left-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-500/80 text-white font-semibold">AI</span>
-                              )}
-                              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/60 transition-colors flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
-                                <button onClick={() => addScannedToMain(item)}
-                                  className="px-2.5 py-1.5 bg-emerald-500 text-white text-[11px] rounded-lg cursor-pointer hover:bg-emerald-600 transition-colors touch-manipulation font-semibold">+ Add</button>
-                                <button onClick={() => { if (confirm('Delete this scan?')) deleteScannedItem(item.id) }}
-                                  className="px-2.5 py-1.5 bg-red-500/80 text-white text-[11px] rounded-lg cursor-pointer hover:bg-red-600 transition-colors touch-manipulation">🗑️</button>
-                              </div>
-                            </div>
-                            <div className="p-2">
-                              <p className="text-slate-100 text-xs font-semibold truncate">{item.name}</p>
-                              <p className="text-slate-500 text-[10px] mt-0.5">{timeAgo(item.lastConfirmed)}</p>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )
-                })}
-                {scannedItems.filter(i => !['Documents','Keys','Electronics','Warranties','Valuables','Other'].includes(i.category)).length > 0 && (
-                  <div className="text-center py-6 text-slate-500 text-xs italic">
-                    {scannedItems.filter(i => !['Documents','Keys','Electronics','Warranties','Valuables','Other'].includes(i.category)).length} items in uncategorized
-                  </div>
-                )}
+                <div className="w-10 h-10 border-3 border-indigo-500 border-t-transparent rounded-full animate-spin mb-3" />
+                <p className="text-sm text-slate-400">Loading photos...</p>
               </div>
             )}
+
+            {!photosLoading && (
+              <>
+                {/* ── Server photos (R2) ── */}
+                {photosFromServer && Object.keys(photosFromServer).length > 0 ? (
+                  <div className="flex-1 overflow-y-auto max-w-6xl mx-auto w-full p-4 pt-3">
+                    {['Documents', 'Keys', 'Electronics', 'Warranties', 'Valuables', 'Other'].map(cat => {
+                      const serverGroup = photosFromServer[cat] || []
+                      const localGroup = scannedItems.filter(i => i.category === cat && !serverGroup.some((s: any) => s.r2_key && i.imageUrl?.includes(s.r2_key)))
+                      const combined = [...serverGroup.map((s: any) => ({
+                        id: s.id, name: s.item_name, category: s.category,
+                        location: s.room_location, imageUrl: `${AI_SCAN_URL}/api/photos/${s.r2_key}`,
+                        imageData: undefined as string | undefined,
+                        roomId: currentRoomId, zoneX: 50, zoneY: 50,
+                        createdAt: s.created_at, lastConfirmed: s.created_at, aiDetected: true,
+                      } satisfies ScannedItem)), ...localGroup]
+                      if (combined.length === 0) return null
+                      return (
+                        <div key={cat} className="mb-6">
+                          <div className="flex items-center gap-2 mb-3 sticky top-0 bg-[rgba(15,23,42,0.95)] py-2 z-[1]">
+                            <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
+                              cat === 'Documents' ? 'bg-blue-500/20 text-blue-400' :
+                              cat === 'Keys' ? 'bg-amber-500/20 text-amber-400' :
+                              cat === 'Electronics' ? 'bg-cyan-500/20 text-cyan-400' :
+                              cat === 'Warranties' ? 'bg-purple-500/20 text-purple-400' :
+                              cat === 'Valuables' ? 'bg-pink-500/20 text-pink-400' :
+                              'bg-slate-500/20 text-slate-400'
+                            }`}>{cat}</span>
+                            <span className="text-slate-500 text-xs">{combined.length}</span>
+                            <div className="flex-1 border-t border-slate-700/30" />
+                          </div>
+                          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5">
+                            {combined.map(item => (
+                              <div key={item.id}
+                                className="bg-slate-800 rounded-xl overflow-hidden border border-slate-700 hover:border-indigo-500/60 hover:shadow-[0_0_15px_rgba(99,102,241,0.2)] transition-all group cursor-pointer">
+                                <div className="aspect-[4/3] bg-slate-700 relative overflow-hidden">
+                                  <img src={item.imageUrl || item.imageData} alt={item.name} className="w-full h-full object-cover" />
+                                  {item.aiDetected && (
+                                    <span className="absolute top-1.5 left-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-500/80 text-white font-semibold">AI</span>
+                                  )}
+                                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/60 transition-colors flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
+                                    <button onClick={() => addScannedToMain(item)}
+                                      className="px-2.5 py-1.5 bg-emerald-500 text-white text-[11px] rounded-lg cursor-pointer hover:bg-emerald-600 transition-colors touch-manipulation font-semibold">+ Add</button>
+                                    <button onClick={() => {
+                                      const parts = item.imageUrl?.split('/api/photos/')
+                                      setAssigningPhoto({ id: item.id, r2Key: parts?.length === 2 ? parts[1] : undefined, imageData: item.imageData })
+                                    }}
+                                      className="px-2.5 py-1.5 bg-indigo-500 text-white text-[11px] rounded-lg cursor-pointer hover:bg-indigo-600 transition-colors touch-manipulation font-semibold">🔗 Assign</button>
+                                    <button onClick={() => { if (confirm('Delete this scan?')) deleteScannedItem(item.id) }}
+                                      className="px-2.5 py-1.5 bg-red-500/80 text-white text-[11px] rounded-lg cursor-pointer hover:bg-red-600 transition-colors touch-manipulation">🗑️</button>
+                                  </div>
+                                </div>
+                                <div className="p-2">
+                                  <p className="text-slate-100 text-xs font-semibold truncate">{item.name}</p>
+                                  <p className="text-slate-500 text-[10px] mt-0.5">{timeAgo(item.lastConfirmed)}</p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )
+                    })}
+                    {scannedItems.filter(i => !['Documents','Keys','Electronics','Warranties','Valuables','Other'].includes(i.category)).length > 0 && (
+                      <div className="text-center py-6 text-slate-500 text-xs italic">
+                        {scannedItems.filter(i => !['Documents','Keys','Electronics','Warranties','Valuables','Other'].includes(i.category)).length} items in uncategorized
+                      </div>
+                    )}
+                  </div>
+                ) : scannedItems.length === 0 ? (
+                  <div className="flex-1 flex flex-col items-center justify-center text-slate-500">
+                    <div className="text-6xl mb-4">📸</div>
+                    <p className="text-lg font-medium mb-1">No scanned items yet</p>
+                    <p className="text-sm">Use the Scan button to take photos of your items</p>
+                  </div>
+                ) : (
+                  <div className="flex-1 overflow-y-auto max-w-6xl mx-auto w-full p-4 pt-3">
+                    {/* Fallback: local-only scanned items */}
+                    {['Documents', 'Keys', 'Electronics', 'Warranties', 'Valuables', 'Other'].map(cat => {
+                      const group = scannedItems.filter(i => i.category === cat)
+                      if (group.length === 0) return null
+                      return (
+                        <div key={cat} className="mb-6">
+                          <div className="flex items-center gap-2 mb-3 sticky top-0 bg-[rgba(15,23,42,0.95)] py-2 z-[1]">
+                            <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
+                              cat === 'Documents' ? 'bg-blue-500/20 text-blue-400' :
+                              cat === 'Keys' ? 'bg-amber-500/20 text-amber-400' :
+                              cat === 'Electronics' ? 'bg-cyan-500/20 text-cyan-400' :
+                              cat === 'Warranties' ? 'bg-purple-500/20 text-purple-400' :
+                              cat === 'Valuables' ? 'bg-pink-500/20 text-pink-400' :
+                              'bg-slate-500/20 text-slate-400'
+                            }`}>{cat}</span>
+                            <span className="text-slate-500 text-xs">{group.length}</span>
+                            <div className="flex-1 border-t border-slate-700/30" />
+                          </div>
+                          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5">
+                            {group.map(item => (
+                              <div key={item.id}
+                                className="bg-slate-800 rounded-xl overflow-hidden border border-slate-700 hover:border-indigo-500/60 hover:shadow-[0_0_15px_rgba(99,102,241,0.2)] transition-all group cursor-pointer">
+                                <div className="aspect-[4/3] bg-slate-700 relative overflow-hidden">
+                                  <img src={item.imageUrl || item.imageData} alt={item.name} className="w-full h-full object-cover" />
+                                  {item.aiDetected && (
+                                    <span className="absolute top-1.5 left-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-500/80 text-white font-semibold">AI</span>
+                                  )}
+                                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/60 transition-colors flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
+                                    <button onClick={() => addScannedToMain(item)}
+                                      className="px-2.5 py-1.5 bg-emerald-500 text-white text-[11px] rounded-lg cursor-pointer hover:bg-emerald-600 transition-colors touch-manipulation font-semibold">+ Add</button>
+                                    <button onClick={() => {
+                                      const parts = item.imageUrl?.split('/api/photos/')
+                                      setAssigningPhoto({ id: item.id, r2Key: parts?.length === 2 ? parts[1] : undefined, imageData: item.imageData })
+                                    }}
+                                      className="px-2.5 py-1.5 bg-indigo-500 text-white text-[11px] rounded-lg cursor-pointer hover:bg-indigo-600 transition-colors touch-manipulation font-semibold">🔗 Assign</button>
+                                    <button onClick={() => { if (confirm('Delete this scan?')) deleteScannedItem(item.id) }}
+                                      className="px-2.5 py-1.5 bg-red-500/80 text-white text-[11px] rounded-lg cursor-pointer hover:bg-red-600 transition-colors touch-manipulation">🗑️</button>
+                                  </div>
+                                </div>
+                                <div className="p-2">
+                                  <p className="text-slate-100 text-xs font-semibold truncate">{item.name}</p>
+                                  <p className="text-slate-500 text-[10px] mt-0.5">{timeAgo(item.lastConfirmed)}</p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )
+                    })}
+                    {scannedItems.filter(i => !['Documents','Keys','Electronics','Warranties','Valuables','Other'].includes(i.category)).length > 0 && (
+                      <div className="text-center py-6 text-slate-500 text-xs italic">
+                        {scannedItems.filter(i => !['Documents','Keys','Electronics','Warranties','Valuables','Other'].includes(i.category)).length} items in uncategorized
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ── Assign Photo to Item Picker ── */}
+        {assigningPhoto && (
+          <div role="dialog" aria-modal="true" aria-label="Assign photo to item"
+            className="fixed inset-0 z-[10000] bg-black/50 flex items-center justify-center p-5 animate-[fadeIn_0.15s_ease-out]"
+            onClick={e => { if (e.target === e.currentTarget) setAssigningPhoto(null) }}>
+            <div className="bg-gray-900 rounded-xl shadow-xl p-5 w-full max-w-sm max-h-[70vh] flex flex-col border border-gray-700">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-slate-100 text-sm font-semibold">🔗 Assign photo to item</h3>
+                <button onClick={() => setAssigningPhoto(null)}
+                  className="bg-none border-none text-slate-400 cursor-pointer hover:text-slate-200 p-1 rounded transition-colors text-lg">✕</button>
+              </div>
+              <input id="assign-search" type="text" placeholder="Search items..." autoComplete="off"
+                className="w-full px-3 py-2 text-sm bg-slate-800 border border-slate-600 rounded-lg text-slate-100 outline-none focus:border-indigo-500 mb-3"
+                onInput={e => (e.currentTarget as HTMLInputElement).focus()} />
+              <div className="flex-1 overflow-y-auto space-y-1">
+                {items.length === 0 ? (
+                  <p className="text-slate-500 text-xs text-center py-6">No items yet. Add items first.</p>
+                ) : (
+                  items.map(it => (
+                    <button key={it.id} onClick={() => assignPhotoToItem(assigningPhoto.id, assigningPhoto.r2Key, assigningPhoto.imageData, it.id)}
+                      className="w-full flex items-center gap-3 px-3 py-2.5 bg-slate-800 hover:bg-indigo-900/40 border border-slate-700 hover:border-indigo-500/50 rounded-lg text-left transition-all cursor-pointer group">
+                      <div className="w-8 h-8 rounded-full flex-shrink-0 overflow-hidden bg-slate-700">
+                        {it.imageKey ? (
+                          <img src={`${AI_SCAN_URL}/api/photos/${it.imageKey}`} alt={it.name} className="w-full h-full object-cover" />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-xs"
+                            style={{ background: `${pinColor(it.category)}20`, color: pinColor(it.category) }}>
+                            {categoryIcon(it.category)}
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-slate-200 truncate group-hover:text-indigo-300 transition-colors">{it.name}</p>
+                        <p className="text-xs text-slate-500">{it.location} · {rooms.find(r => r.id === it.roomId)?.name || 'Unknown'}</p>
+                      </div>
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
           </div>
         )}
 
