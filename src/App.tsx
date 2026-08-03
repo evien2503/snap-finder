@@ -64,6 +64,41 @@ interface MatchResult {
 }
 
 async function visionScan(base64Image: string, userId: string, roomName = 'Unknown', location = 'Scanned'): Promise<VisionResult | null> {
+  /* Gemini 2.5 Flash — primary vision scan */
+  if (GEMINI_KEY) {
+    try {
+      const res = await fetch(`${GEMINI_URL}?key=${GEMINI_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { text: `You are an item identification assistant. Look at this photo and identify the single most prominent item. Return ONLY valid JSON with keys: "itemName", "confidence" ("high"/"medium"/"low"), "distinctFeatures" (array of 2-4 strings), "suggestedCategory" (one of: Documents, Keys, Electronics, Valuables, Warranties, Other), "description" (one short sentence). Example: {"itemName":"Passport","confidence":"high","distinctFeatures":["Red cover","Gold emblem"],"suggestedCategory":"Documents","description":"A travel document kept in a drawer"}` },
+              { inline_data: { mime_type: (base64Image.split(',')[0].match(/data:(.*?)(;|$)/)?.[1] || 'image/jpeg'), data: base64Image.split(',')[1] || base64Image } },
+            ],
+          }],
+          generationConfig: { responseMimeType: 'application/json' },
+        }),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        const raw = data.candidates?.[0]?.content?.parts?.[0]?.text
+        if (raw) {
+          let parsed: any
+          try {
+            parsed = JSON.parse(raw)
+          } catch {
+            const jsonMatch = raw.match(/\{[\s\S]*\}/)
+            parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : null
+          }
+          if (parsed?.itemName) return parsed
+        }
+      }
+    } catch {
+      /* fall through to AI Gateway fallback */
+    }
+  }
+
   /* AI Gateway — mimo-v2.5 vision scan (no fallback) */
   if (!AI_GATEWAY_KEY) return null
   try {
@@ -166,6 +201,8 @@ interface ChatResponse { reply: string; reasoning?: string; suggestedItemIds: st
 /* ── AI Chatbot — AI Gateway (OpenAI-compatible) ── */
 const AI_GATEWAY_URL = 'https://ai-gateway.guidesify.com/v1/chat/completions'
 const AI_GATEWAY_KEY = import.meta.env.VITE_AI_KEY || ''
+const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent'
+const GEMINI_KEY = import.meta.env.VITE_GEMINI_KEY || ''
 
 async function sendChat(message: string, items: Item[], rooms: Room[], history: Array<{ role: string; content: string }>): Promise<ChatResponse> {
   if (!AI_GATEWAY_KEY) {
@@ -337,6 +374,200 @@ function categoryIcon(cat: string) {
   }
 }
 
+/* ── Room Map Panel ── */
+
+function RoomMapPanel({
+  room, roomItems, selectedZone, glowingItemId, glowingZoneId, isEditingMap, onClose,
+  onToggleEdit, onZoneMove, onSelectZone, onPinClick, onAddFurniture, onDeleteZone, onAssignItem, onUnassignItem,
+}: {
+  room: Room; roomItems: Item[]; selectedZone: string | null; glowingItemId: string | null; glowingZoneId: string | null;
+  isEditingMap: boolean; onClose?: () => void;
+  onToggleEdit: () => void;
+  onZoneMove: (roomId: string, zoneId: string, x: number, y: number) => void;
+  onSelectZone: (id: string | null) => void;
+  onPinClick: (itemId: string) => void;
+  onAddFurniture: (roomId: string) => void;
+  onDeleteZone: (roomId: string, zoneId: string) => void;
+  onAssignItem: (itemId: string, zoneId: string) => void;
+  onUnassignItem: (itemId: string) => void;
+}) {
+  const dragStateRef = useRef<{ roomId: string; zoneId: string } | null>(null)
+  const [dropZoneId, setDropZoneId] = useState<string | null>(null)
+  const [assignItemId, setAssignItemId] = useState<string | null>(null)
+  const itemDragRef = useRef<{ itemId: string; ghost: HTMLElement } | null>(null)
+
+  /* ── Drag zones ── */
+  function startDrag(zoneEl: HTMLElement) {
+    if (zoneEl.closest('.map-pin, .zone-delete')) return
+    const roomId = zoneEl.dataset.roomId; const zoneId = zoneEl.dataset.zone
+    if (!roomId || !zoneId) return
+    dragStateRef.current = { roomId, zoneId }
+    zoneEl.classList.add('dragging')
+    const border = zoneEl.closest('.room-border') as HTMLElement
+    if (!border) return
+    const rect = border.getBoundingClientRect()
+
+    function onMove(cx: number, cy: number) {
+      if (!dragStateRef.current) return
+      const px = ((cx - rect.left) / rect.width) * 100; const py = ((cy - rect.top) / rect.height) * 100
+      const x = Math.max(0, Math.min(100, Math.round(px * 10) / 10)); const y = Math.max(0, Math.min(100, Math.round(py * 10) / 10))
+      onZoneMove(dragStateRef.current.roomId, dragStateRef.current.zoneId, x, y)
+      const el = document.querySelector<HTMLElement>(`.drag-zone[data-zone="${zoneId}"][data-room-id="${roomId}"]`)
+      if (el) { el.style.left = `${x}%`; el.style.top = `${y}%` }
+    }
+    function onUp() {
+      dragStateRef.current = null; document.querySelectorAll('.drag-zone.dragging').forEach(el => el.classList.remove('dragging'))
+      document.removeEventListener('mousemove', onMouseMove); document.removeEventListener('mouseup', onMouseUp)
+      document.removeEventListener('touchmove', onTouchMove); document.removeEventListener('touchend', onTouchEnd)
+    }
+    function onMouseMove(ev: MouseEvent) { onMove(ev.clientX, ev.clientY) }
+    function onMouseUp() { onUp() }
+    function onTouchMove(ev: TouchEvent) { if (ev.touches[0]) onMove(ev.touches[0].clientX, ev.touches[0].clientY) }
+    function onTouchEnd() { onUp() }
+    document.addEventListener('mousemove', onMouseMove); document.addEventListener('mouseup', onMouseUp)
+    document.addEventListener('touchmove', onTouchMove, { passive: true }); document.addEventListener('touchend', onTouchEnd)
+  }
+
+  /* ── Touch-drag pins → unsorted tray (unassign) ── */
+  function startPinTouchDrag(ev: React.TouchEvent, itemId: string) {
+    const touch = ev.touches[0]; if (!touch) return
+    const pinEl = ev.currentTarget as HTMLElement
+    const ghost = pinEl.cloneNode(true) as HTMLElement
+    ghost.style.cssText = 'position:fixed;z-index:100;pointer-events:none;opacity:0.85;transform:scale(1.15);left:' + touch.clientX + 'px;top:' + touch.clientY + 'px;margin:-14px 0 0 -14px;'
+    document.body.appendChild(ghost)
+    itemDragRef.current = { itemId, ghost }
+    const onMove = (ev2: TouchEvent) => { const t = ev2.touches[0]; if (t && itemDragRef.current) itemDragRef.current.ghost.style.left = t.clientX + 'px'; if (t && itemDragRef.current) itemDragRef.current.ghost.style.top = t.clientY + 'px' }
+    const onEnd = () => {
+      const tray = document.querySelector('[data-unsorted-tray]')
+      if (tray && itemDragRef.current) {
+        const r = tray.getBoundingClientRect()
+        const ghost = itemDragRef.current.ghost
+        const gx = parseFloat(ghost.style.left); const gy = parseFloat(ghost.style.top)
+        if (gx >= r.left && gx <= r.right && gy >= r.top && gy <= r.bottom) onUnassignItem(itemDragRef.current.itemId)
+      }
+      if (itemDragRef.current) { itemDragRef.current.ghost.remove(); itemDragRef.current = null }
+      document.removeEventListener('touchmove', onMove); document.removeEventListener('touchend', onEnd); document.removeEventListener('touchcancel', onEnd)
+    }
+    document.addEventListener('touchmove', onMove, { passive: true }); document.addEventListener('touchend', onEnd); document.addEventListener('touchcancel', onEnd)
+  }
+
+  return (
+    <>
+    <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-sm overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-3.5 border-b border-gray-200 dark:border-gray-700">
+        <h3 className="text-sm font-semibold">🗺️ {room.name}</h3>
+        <div className="flex items-center gap-2">
+          {selectedZone && (
+            <button type="button" onClick={() => onSelectZone(null)} className="px-2.5 py-1 text-xs font-medium border border-gray-200 dark:border-gray-600 rounded-md cursor-pointer bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors touch-manipulation">Clear Filter</button>
+          )}
+          <button type="button" onClick={onToggleEdit}
+            className={`px-2.5 py-1 text-xs font-medium border rounded-md cursor-pointer transition-colors touch-manipulation ${
+              isEditingMap ? 'bg-indigo-500 text-white border-indigo-500 hover:bg-indigo-600' : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700'
+            }`}>
+            {isEditingMap ? '✅ Done' : '✏️ Edit Map'}
+          </button>
+          {onClose && (
+            <button aria-label="Close map" onClick={onClose} className="bg-none border-none text-lg cursor-pointer text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 p-1 rounded transition-colors touch-manipulation">✕</button>
+          )}
+        </div>
+      </div>
+      <div className="p-4">
+        <div className="relative w-full aspect-[4/3] bg-gray-50 dark:bg-gray-900 border-2 border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden room-border">
+          <div className="absolute inset-0 flex items-center justify-center text-xs text-gray-400 dark:text-gray-600 font-medium pointer-events-none whitespace-nowrap select-none">Drag zones to rearrange</div>
+          {room.zones.map(zone => {
+            const zoned = roomItems.filter(i => Math.abs(i.zoneX - zone.x) < 15 && Math.abs(i.zoneY - zone.y) < 15)
+            const hasGlowing = zoned.some(i => i.id === glowingItemId)
+            const zoneCats = [...new Set(zoned.map(i => i.category))]
+            const zoneColor = zoneCats.length === 1 ? pinColor(zoneCats[0]) : null
+            return (
+              <div key={zone.id}
+                className={`drag-zone absolute -translate-x-1/2 -translate-y-1/2 px-2.5 py-1.5 rounded-lg cursor-pointer transition-all select-none min-w-[60px] ${
+                  selectedZone === zone.id ? 'bg-indigo-500/20 border-indigo-500' : 'bg-indigo-500/10 border-indigo-500/30'
+                } ${glowingZoneId === zone.id ? '!border-emerald-400 !shadow-[0_0_15px_rgba(16,185,129,0.5),0_0_30px_rgba(16,185,129,0.2)] !bg-emerald-500/20 !z-10' : ''} ${hasGlowing ? '!border-indigo-500 !shadow-[0_0_0_3px_rgba(99,102,241,0.2),0_0_20px_rgba(99,102,241,0.15)] animate-pulse' : ''} ${isEditingMap ? 'ring-2 ring-indigo-400/60' : ''} ${dropZoneId === zone.id ? 'ring-2 ring-emerald-400 bg-emerald-500/10 !z-10' : ''}`}
+                data-zone={zone.id} data-room-id={room.id}
+                style={{ left: `${zone.x}%`, top: `${zone.y}%`, border: '1px dashed', touchAction: 'none', ...(zoneColor ? { borderColor: zoneColor, background: `${zoneColor}15` } : {}) }}
+                onMouseDown={e => { if (!(e.target as HTMLElement).closest('.map-pin, .zone-delete')) startDrag(e.currentTarget) }}
+                onTouchStart={e => { if (!(e.target as HTMLElement).closest('.map-pin, .zone-delete')) startDrag(e.currentTarget) }}
+                onClick={e => { e.stopPropagation(); if (!(e.target as HTMLElement).closest('.map-pin, .zone-delete')) onSelectZone(selectedZone === zone.id ? null : zone.id) }}
+                onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDropZoneId(zone.id) }}
+                onDrop={e => { e.preventDefault(); const id = e.dataTransfer.getData('text/plain'); if (id) onAssignItem(id, zone.id); setDropZoneId(null) }}
+                onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropZoneId(null) }}>
+                {isEditingMap ? (
+                  <span className="inline-flex items-center justify-center w-11 h-11 -m-3 text-xs text-gray-500 dark:text-gray-400 cursor-grab active:cursor-grabbing select-none">⠿</span>
+                ) : (
+                  <span className="block text-center text-xs text-gray-500 dark:text-gray-400 opacity-40 cursor-grab select-none mb-0.5">⠿</span>
+                )}
+                <span className="block text-[11px] text-gray-500 dark:text-gray-400 font-semibold text-center pointer-events-none select-none">{zone.label}</span>
+                {zoned.length > 0 && (
+                  <span className="absolute -top-1.5 -right-1.5 w-4.5 h-4.5 rounded-full bg-indigo-500 text-white text-[10px] font-bold flex items-center justify-center pointer-events-none select-none">{zoned.length}</span>
+                )}
+                {isEditingMap && (
+                  <button type="button" aria-label={`Delete zone ${zone.label}`} className="zone-delete absolute -top-2 -right-2 w-11 h-11 flex items-center justify-center rounded-full bg-white dark:bg-gray-700 border border-red-300 dark:border-red-900 text-red-500 text-sm shadow-md cursor-pointer z-10" onClick={(e) => { e.stopPropagation(); if (confirm(`Delete "${zone.label}"? Items near it will become unsorted.`)) onDeleteZone(room.id, zone.id) }}>🗑️</button>
+                )}
+                {zoned.map(i => (
+                  <div key={i.id}
+                    className={`map-pin absolute -translate-x-1/2 -translate-y-1/2 w-7 h-7 rounded-full flex items-center justify-center text-sm cursor-pointer shadow-md z-2 transition-all hover:scale-120 ${
+                      glowingItemId === i.id ? '!z-6 animate-pulse-glow' : ''
+                    }`}
+                    data-item-id={i.id} data-pin-for={i.id}
+                    style={{ background: pinColor(i.category), touchAction: 'none' }}
+                    draggable="true"
+                    onDragStart={e => { e.stopPropagation(); e.dataTransfer.setData('text/plain', i.id); e.dataTransfer.effectAllowed = 'move' }}
+                    onTouchStart={e => { e.stopPropagation(); startPinTouchDrag(e, i.id) }}
+                    onClick={e => { e.stopPropagation(); onPinClick(i.id) }}>
+                    {pinIcon(i.name)}
+                  </div>
+                ))}
+              </div>
+            )
+          })}
+          {isEditingMap && (
+            <button type="button" onClick={() => onAddFurniture(room.id)} className="absolute bottom-2 right-2 z-20 px-4 py-2.5 min-h-[44px] bg-indigo-500 hover:bg-indigo-600 text-white text-xs font-bold rounded-lg shadow-md cursor-pointer touch-manipulation">+ Add Furniture</button>
+          )}
+        </div>
+        {/* Unsorted bar */}
+        {(() => {
+          const unsorted = roomItems.filter(i => !room.zones.some(z => Math.abs(i.zoneX - z.x) < 15 && Math.abs(i.zoneY - z.y) < 15))
+          if (unsorted.length === 0) return null
+          return (
+            <div data-unsorted-tray className="flex items-center gap-2 p-2.5 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 flex-wrap"
+              onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move' }}
+              onDrop={e => { e.preventDefault(); const id = e.dataTransfer.getData('text/plain'); if (id) onUnassignItem(id) }}>
+              <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 whitespace-nowrap">📦 Unsorted / Off-Map Items</span>
+              {unsorted.map(i => (
+                <span key={i.id} data-tray-pill={i.id} draggable="true"
+                  onDragStart={e => { e.dataTransfer.setData('text/plain', i.id); e.dataTransfer.effectAllowed = 'move' }}
+                  onDragEnd={() => setDropZoneId(null)}
+                  onClick={() => setAssignItemId(assignItemId === i.id ? null : i.id)}
+                  className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-full text-gray-700 dark:text-gray-300 whitespace-nowrap cursor-pointer hover:border-indigo-500 transition-colors ${
+                    glowingItemId === i.id ? '!border-indigo-500 !shadow-[0_0_0_2px_rgba(99,102,241,0.2)]' : ''
+                  }`}>
+                  {pinIcon(i.name)} {i.name}
+                </span>
+              ))}
+            </div>
+          )
+        })()}
+      </div>
+    </div>
+    {assignItemId && (() => {
+      const rect = document.querySelector(`[data-tray-pill="${assignItemId}"]`)?.getBoundingClientRect()
+      return (
+        <>
+          <div className="fixed inset-0 z-[70]" onClick={() => setAssignItemId(null)} />
+          <div style={{ position: 'fixed', top: (rect?.bottom ?? 0) + 4, left: Math.min(rect?.left ?? 0, window.innerWidth - 160) }} className="z-[80] bg-white dark:bg-gray-800 border rounded-lg shadow-xl p-2 w-40">
+            <div className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 px-3 py-1">Assign to:</div>
+            {room.zones.map(z => (
+              <button key={z.id} type="button" onClick={() => { onAssignItem(assignItemId, z.id); setAssignItemId(null) }} className="block w-full text-left px-3 py-2 text-xs hover:bg-indigo-50 dark:hover:bg-gray-700 rounded-md">{z.label}</button>
+            ))}
+          </div>
+        </>
+      )
+    })()}
+    </>
+  )
+}
+
 /* ── React App ── */
 
 export default function App() {
@@ -357,6 +588,7 @@ export default function App() {
   const [selectedZone, setSelectedZone] = useState<string | null>(null)
   const [glowingItemId, setGlowingItemId] = useState<string | null>(null)
   const [glowingZoneId, setGlowingZoneId] = useState<string | null>(null)
+  const [isEditingMap, setIsEditingMap] = useState(false)
   const [glowingRoomIds, setGlowingRoomIds] = useState<string[]>([])
   const [showAddModal, setShowAddModal] = useState(false)
   const [editingItem, setEditingItem] = useState<Item | null>(null)
@@ -369,6 +601,8 @@ export default function App() {
   const [photosFromServer, setPhotosFromServer] = useState<Record<string, any[]> | null>(null)
   const [photosLoading, setPhotosLoading] = useState(false)
   const [assigningPhoto, setAssigningPhoto] = useState<{ id: string; r2Key?: string; imageData?: string } | null>(null)
+  const [pickForItem, setPickForItem] = useState<Item | null>(null)
+  const [pickSearch, setPickSearch] = useState('')
   const [showConfetti, setShowConfetti] = useState(false)
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [onboardingStep, setOnboardingStep] = useState<1 | 2>(1)
@@ -410,7 +644,6 @@ export default function App() {
   const pulseTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const scanVideoRef = useRef<HTMLVideoElement | null>(null)
   const scanStreamRef = useRef<MediaStream | null>(null)
-  const dragState = useRef<{ roomId: string; zoneId: string } | null>(null)
 
   const room = rooms.find(r => r.id === currentRoomId) || rooms[0]
   const roomItems = items.filter(i => i.roomId === currentRoomId)
@@ -455,6 +688,13 @@ export default function App() {
       syncHistory()
     }
   }, [showScannedGallery])
+
+  useEffect(() => {
+    if (pickForItem) {
+      fetchPhotos(userRef.current).then(data => setPhotosFromServer(data.categories)).catch(() => {})
+      syncHistory()
+    }
+  }, [pickForItem])
 
   function loadData(u: User) {
     const raw = localStorage.getItem(storageKey(u.email))
@@ -525,6 +765,23 @@ export default function App() {
     setAuthError(''); setPage('dashboard')
   }
 
+  function forgotPassword() {
+    const email = window.prompt('Enter your account email:', authEmail || '')
+    if (email === null || !email.trim()) return
+    const users = getUsers()
+    const u = users.find(us => us.email === email.trim())
+    if (!u) { setAuthError('No account found for that email'); return }
+    const newPw = window.prompt('Enter your new password (at least 4 characters):')
+    if (newPw === null) return
+    if (newPw.length < 4) { setAuthError('Password must be at least 4 characters'); return }
+    const confirm = window.prompt('Confirm your new password:')
+    if (confirm !== newPw) { setAuthError('Passwords do not match'); return }
+    u.password = hashPass(newPw)
+    saveUsers(users)
+    setAuthError('Password reset! Sign in with your new password.')
+    setAuthPassword('')
+  }
+
   function signOut() {
     stopScanCamera()
     setUser(null); setItems([]); setRooms([]); setScannedItems([]); setAuthError(''); setShowOnboarding(false); setPage('auth')
@@ -541,6 +798,24 @@ export default function App() {
       { id: 'corner_2', label: 'Corner 2', x: 85, y: 70 },
     ]}])
     setCurrentRoomId(id); setSelectedZone(null)
+  }
+
+  function addZone(roomId: string, label: string) {
+    setRooms(prev => prev.map(r => r.id === roomId ? { ...r, zones: [...r.zones, { id: crypto.randomUUID(), label, x: 50, y: 40 }] } : r))
+  }
+
+  function deleteZone(roomId: string, zoneId: string) {
+    setRooms(prev => prev.map(r => r.id === roomId ? { ...r, zones: r.zones.filter(z => z.id !== zoneId) } : r))
+  }
+
+  function assignItemToZone(itemId: string, zoneId: string) {
+    const room = rooms.find(r => r.id === currentRoomId)
+    const zone = room?.zones.find(z => z.id === zoneId)
+    if (!zone) return
+    setItems(prev => prev.map(i => i.id === itemId ? { ...i, zoneX: zone.x, zoneY: zone.y, location: zone.label, lastConfirmed: new Date().toISOString() } : i))
+  }
+  function unassignItem(itemId: string) {
+    setItems(prev => prev.map(i => i.id === itemId ? { ...i, zoneX: -50, zoneY: -50, location: 'Unsorted', lastConfirmed: new Date().toISOString() } : i))
   }
 
   function addItem(name: string, location: string, category: string, zoneX = 50, zoneY = 50, imageKey?: string) {
@@ -715,7 +990,7 @@ export default function App() {
           }
         })
       } else {
-        setScanResult({ name: '', category: 'Other', description: 'Could not identify — enter details below', confidence: 'low', features: [] })
+        setScanResult({ name: '', category: 'Other', description: '⚠️ Scan failed — AI service unavailable. Enter details below', confidence: 'low', features: [] })
         setScanMode('result')
       }
     })
@@ -781,6 +1056,24 @@ export default function App() {
       })
     }
     setAssigningPhoto(null)
+  }
+
+  function attachPhotoToItem(itemId: string, r2Key?: string, imageData?: string) {
+    if (r2Key) {
+      /* Already has R2 key — assign directly */
+      setItems(prev => prev.map(i => i.id === itemId ? { ...i, imageKey: r2Key } : i))
+    } else if (imageData) {
+      /* Legacy base64 — upload to R2 first, then assign */
+      uploadPhoto(imageData, userRef.current, 'Assigned Photo', 'Other', 'Scanned').then(upload => {
+        if (upload) setItems(prev => prev.map(i => i.id === itemId ? { ...i, imageKey: upload.r2Key } : i))
+      })
+    }
+    setPickForItem(null)
+  }
+
+  function removeItemPhoto(itemId: string) {
+    setItems(prev => prev.map(i => i.id === itemId ? { ...i, imageKey: undefined } : i))
+    setPickForItem(null)
   }
 
   function closeScanner() {
@@ -858,39 +1151,6 @@ export default function App() {
     })
   }
 
-  /* ── Drag zones ── */
-  function startDrag(zoneEl: HTMLElement) {
-    if (zoneEl.closest('.map-pin')) return
-    const roomId = zoneEl.dataset.roomId; const zoneId = zoneEl.dataset.zone
-    if (!roomId || !zoneId) return
-    dragState.current = { roomId, zoneId }
-    zoneEl.classList.add('dragging')
-    const border = zoneEl.closest('.room-border') as HTMLElement
-    if (!border) return
-    const rect = border.getBoundingClientRect()
-
-    function onMove(cx: number, cy: number) {
-      if (!dragState.current) return
-      const px = ((cx - rect.left) / rect.width) * 100; const py = ((cy - rect.top) / rect.height) * 100
-      setRooms(prev => prev.map(r => r.id === dragState.current!.roomId ? {
-        ...r, zones: r.zones.map(z => z.id === dragState.current!.zoneId ? { ...z, x: Math.max(0, Math.min(100, Math.round(px * 10) / 10)), y: Math.max(0, Math.min(100, Math.round(py * 10) / 10)) } : z)
-      } : r))
-      const el = document.querySelector<HTMLElement>(`.drag-zone[data-zone="${zoneId}"][data-room-id="${roomId}"]`)
-      if (el) { el.style.left = `${Math.max(0, Math.min(100, Math.round(px * 10) / 10))}%`; el.style.top = `${Math.max(0, Math.min(100, Math.round(py * 10) / 10))}%` }
-    }
-    function onUp() {
-      dragState.current = null; document.querySelectorAll('.drag-zone.dragging').forEach(el => el.classList.remove('dragging'))
-      document.removeEventListener('mousemove', onMouseMove); document.removeEventListener('mouseup', onMouseUp)
-      document.removeEventListener('touchmove', onTouchMove); document.removeEventListener('touchend', onTouchEnd)
-    }
-    function onMouseMove(ev: MouseEvent) { onMove(ev.clientX, ev.clientY) }
-    function onMouseUp() { onUp() }
-    function onTouchMove(ev: TouchEvent) { if (ev.touches[0]) onMove(ev.touches[0].clientX, ev.touches[0].clientY) }
-    function onTouchEnd() { onUp() }
-    document.addEventListener('mousemove', onMouseMove); document.addEventListener('mouseup', onMouseUp)
-    document.addEventListener('touchmove', onTouchMove, { passive: true }); document.addEventListener('touchend', onTouchEnd)
-  }
-
   /* ── Cleanup on unmount ── */
   useEffect(() => {
     return () => {
@@ -922,6 +1182,11 @@ export default function App() {
               <input type="password" placeholder="Enter password" value={authPassword} onChange={e => setAuthPassword(e.target.value)}
                 className="px-4 py-3 border border-gray-200 dark:border-gray-600 rounded-lg text-sm outline-none focus:border-indigo-500 focus:ring-3 focus:ring-indigo-500/40 bg-white dark:bg-gray-700 dark:text-gray-100 transition-colors" required />
             </div>
+            {!isSignUp && (
+              <div className="flex justify-end -mt-1">
+                <button type="button" onClick={() => forgotPassword()} className="text-xs text-indigo-500 hover:opacity-80 text-right cursor-pointer">Forgot password?</button>
+              </div>
+            )}
             {authError && <p role="alert" className="text-red-500 dark:text-red-400 text-sm text-center bg-red-50 dark:bg-red-900/30 py-2 px-3 rounded-md">{authError}</p>}
             <button type="submit" className="w-full py-3 bg-indigo-500 hover:bg-indigo-600 text-white font-semibold rounded-lg transition-all hover:-translate-y-0.5 hover:shadow-md active:translate-y-0 cursor-pointer touch-manipulation">
               {isSignUp ? 'Create Account' : 'Sign In'}
@@ -1233,7 +1498,9 @@ export default function App() {
                         }`}>
                         <div className="flex items-center gap-3">
                           {/* Category / Image thumbnail */}
-                          <div className="w-10 h-10 rounded-full flex-shrink-0 overflow-hidden bg-gray-100 dark:bg-gray-700">
+                          <button type="button" aria-label={item.imageKey ? 'Change photo' : 'Add photo'} title={item.imageKey ? 'Change photo' : 'Add photo'}
+                            onClick={() => setPickForItem(item)}
+                            className="w-10 h-10 rounded-full flex-shrink-0 overflow-hidden bg-gray-100 dark:bg-gray-700 cursor-pointer relative group">
                             {item.imageKey ? (
                               <img src={`${AI_SCAN_URL}/api/photos/${item.imageKey}`} alt={item.name}
                                 className="w-full h-full object-cover" />
@@ -1243,7 +1510,8 @@ export default function App() {
                                 {categoryIcon(item.category)}
                               </div>
                             )}
-                          </div>
+                            <span className="absolute inset-0 flex items-center justify-center bg-black/50 text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity">📷</span>
+                          </button>
 
                           {/* Main content */}
                           <div className="flex-1 min-w-0">
@@ -1288,71 +1556,7 @@ export default function App() {
 
             {/* Map Panel */}
             <div className="sticky top-5 max-md:hidden">
-              <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-sm overflow-hidden">
-                <div className="flex items-center justify-between px-4 py-3.5 border-b border-gray-200 dark:border-gray-700">
-                  <h3 className="text-sm font-semibold">🗺️ {room.name}</h3>
-                  {selectedZone && (
-                    <button onClick={() => setSelectedZone(null)} className="px-2.5 py-1 text-xs font-medium border border-gray-200 dark:border-gray-600 rounded-md cursor-pointer bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors touch-manipulation">Clear Filter</button>
-                  )}
-                </div>
-                <div className="p-4">
-                  <div className="relative w-full aspect-[4/3] bg-gray-50 dark:bg-gray-900 border-2 border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden room-border">
-                    <div className="absolute inset-0 flex items-center justify-center text-xs text-gray-400 dark:text-gray-600 font-medium pointer-events-none whitespace-nowrap select-none">Drag zones to rearrange</div>
-                    {room.zones.map(zone => {
-                      const zoned = roomItems.filter(i => Math.abs(i.zoneX - zone.x) < 15 && Math.abs(i.zoneY - zone.y) < 15)
-                      const hasGlowing = zoned.some(i => i.id === glowingItemId)
-                      const zoneCats = [...new Set(zoned.map(i => i.category))]
-                      const zoneColor = zoneCats.length === 1 ? pinColor(zoneCats[0]) : null
-                      return (
-                        <div key={zone.id}
-                          className={`drag-zone absolute -translate-x-1/2 -translate-y-1/2 px-2.5 py-1.5 rounded-lg cursor-pointer transition-all select-none min-w-[60px] ${
-                            selectedZone === zone.id ? 'bg-indigo-500/20 border-indigo-500' : 'bg-indigo-500/10 border-indigo-500/30'
-                          } ${glowingZoneId === zone.id ? '!border-emerald-400 !shadow-[0_0_15px_rgba(16,185,129,0.5),0_0_30px_rgba(16,185,129,0.2)] !bg-emerald-500/20 !z-10' : ''} ${hasGlowing ? '!border-indigo-500 !shadow-[0_0_0_3px_rgba(99,102,241,0.2),0_0_20px_rgba(99,102,241,0.15)] animate-pulse' : ''}`}
-                          data-zone={zone.id} data-room-id={room.id}
-                          style={{ left: `${zone.x}%`, top: `${zone.y}%`, border: '1px dashed', ...(zoneColor ? { borderColor: zoneColor, background: `${zoneColor}15` } : {}) }}
-                          onMouseDown={e => { if (!(e.target as HTMLElement).closest('.map-pin')) startDrag(e.currentTarget) }}
-                          onTouchStart={e => { if (!(e.target as HTMLElement).closest('.map-pin')) startDrag(e.currentTarget) }}
-                          onClick={e => { e.stopPropagation(); if (!(e.target as HTMLElement).closest('.map-pin')) setSelectedZone(selectedZone === zone.id ? null : zone.id) }}>
-                          <span className="block text-center text-xs text-gray-500 dark:text-gray-400 opacity-40 cursor-grab select-none mb-0.5">⠿</span>
-                          <span className="block text-[11px] text-gray-500 dark:text-gray-400 font-semibold text-center pointer-events-none select-none">{zone.label}</span>
-                          {zoned.length > 0 && (
-                            <span className="absolute -top-1.5 -right-1.5 w-4.5 h-4.5 rounded-full bg-indigo-500 text-white text-[10px] font-bold flex items-center justify-center pointer-events-none select-none">{zoned.length}</span>
-                          )}
-                          {zoned.map(i => (
-                            <div key={i.id}
-                              className={`map-pin absolute -translate-x-1/2 -translate-y-1/2 w-7 h-7 rounded-full flex items-center justify-center text-sm cursor-pointer shadow-md z-2 transition-all hover:scale-120 ${
-                                glowingItemId === i.id ? '!z-6 animate-pulse-glow' : ''
-                              }`}
-                              data-item-id={i.id} data-pin-for={i.id}
-                              style={{ background: pinColor(i.category) }}
-                              onClick={e => { e.stopPropagation(); setGlowingItemId(glowingItemId === i.id ? null : i.id) }}>
-                              {pinIcon(i.name)}
-                            </div>
-                          ))}
-                        </div>
-                      )
-                    })}
-                  </div>
-                  {/* Unsorted bar */}
-                  {(() => {
-                    const unsorted = roomItems.filter(i => !room.zones.some(z => Math.abs(i.zoneX - z.x) < 15 && Math.abs(i.zoneY - z.y) < 15))
-                    if (unsorted.length === 0) return null
-                    return (
-                      <div className="flex items-center gap-2 p-2.5 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 flex-wrap">
-                        <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 whitespace-nowrap">📦 Unsorted / Off-Map Items</span>
-                        {unsorted.map(i => (
-                          <span key={i.id} onClick={() => setGlowingItemId(glowingItemId === i.id ? null : i.id)}
-                            className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-full text-gray-700 dark:text-gray-300 whitespace-nowrap cursor-pointer hover:border-indigo-500 transition-colors ${
-                              glowingItemId === i.id ? '!border-indigo-500 !shadow-[0_0_0_2px_rgba(99,102,241,0.2)]' : ''
-                            }`}>
-                            {pinIcon(i.name)} {i.name}
-                          </span>
-                        ))}
-                      </div>
-                    )
-                  })()}
-                </div>
-              </div>
+              <RoomMapPanel room={room} roomItems={roomItems} selectedZone={selectedZone} glowingItemId={glowingItemId} glowingZoneId={glowingZoneId} isEditingMap={isEditingMap} onToggleEdit={() => setIsEditingMap(v => !v)} onZoneMove={(rid, zid, x, y) => setRooms(prev => prev.map(r => r.id === rid ? { ...r, zones: r.zones.map(z => z.id === zid ? { ...z, x, y } : z) } : r))} onSelectZone={setSelectedZone} onPinClick={(id) => setGlowingItemId(glowingItemId === id ? null : id)} onAddFurniture={async (rid) => { const n = await showInlinePrompt('Furniture name (e.g. Nightstand, Pantry):'); if (n && n.trim()) addZone(rid, n.trim()) }} onDeleteZone={deleteZone} onAssignItem={assignItemToZone} onUnassignItem={unassignItem} />
             </div>
           </div>
         </div>
@@ -1360,34 +1564,8 @@ export default function App() {
         {/* Mobile Map Overlay */}
         {showMobileMap && (
           <div className="fixed inset-0 z-[60] bg-white dark:bg-gray-800 flex flex-col animate-[fadeIn_0.2s_ease-out] md:hidden">
-            <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
-              <h3 className="text-lg font-semibold">🗺️ {room.name}</h3>
-              <button aria-label="Close map" onClick={() => setShowMobileMap(false)} className="bg-none border-none text-lg cursor-pointer text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 p-1 rounded transition-colors touch-manipulation">✕</button>
-            </div>
             <div className="flex-1 p-4 overflow-auto">
-              <div className="relative w-full aspect-[4/3] min-h-[300px] bg-gray-50 dark:bg-gray-900 border-2 border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden room-border">
-                <div className="absolute inset-0 flex items-center justify-center text-xs text-gray-400 font-medium pointer-events-none whitespace-nowrap">Drag zones to rearrange</div>
-                {room.zones.map(zone => {
-                  const zoned = roomItems.filter(i => Math.abs(i.zoneX - zone.x) < 15 && Math.abs(i.zoneY - zone.y) < 15)
-                  return (
-                    <div key={zone.id}
-                      className={`drag-zone absolute -translate-x-1/2 -translate-y-1/2 px-2 py-1 rounded-lg cursor-pointer transition-all select-none ${
-                        selectedZone === zone.id ? 'bg-indigo-500/20 border-indigo-500' : 'bg-indigo-500/10 border-indigo-500/30'
-                      }`}
-                      data-zone={zone.id} data-room-id={room.id}
-                      style={{ left: `${zone.x}%`, top: `${zone.y}%`, border: '1px dashed' }}>
-                      <span className="block text-[11px] text-gray-500 font-semibold text-center pointer-events-none">{zone.label}</span>
-                      {zoned.map(i => (
-                        <div key={i.id}
-                          className={`map-pin absolute -translate-x-1/2 -translate-y-full w-7 h-7 rounded-full flex items-center justify-center text-sm cursor-pointer shadow-md z-5`}
-                          style={{ background: pinColor(i.category), filter: 'drop-shadow(0 2px 3px rgba(0,0,0,0.3))' }}>
-                          {pinIcon(i.name)}
-                        </div>
-                      ))}
-                    </div>
-                  )
-                })}
-              </div>
+              <RoomMapPanel room={room} roomItems={roomItems} selectedZone={selectedZone} glowingItemId={glowingItemId} glowingZoneId={glowingZoneId} isEditingMap={isEditingMap} onClose={() => setShowMobileMap(false)} onToggleEdit={() => setIsEditingMap(v => !v)} onZoneMove={(rid, zid, x, y) => setRooms(prev => prev.map(r => r.id === rid ? { ...r, zones: r.zones.map(z => z.id === zid ? { ...z, x, y } : z) } : r))} onSelectZone={setSelectedZone} onPinClick={(id) => setGlowingItemId(glowingItemId === id ? null : id)} onAddFurniture={async (rid) => { const n = await showInlinePrompt('Furniture name (e.g. Nightstand, Pantry):'); if (n && n.trim()) addZone(rid, n.trim()) }} onDeleteZone={deleteZone} onAssignItem={assignItemToZone} onUnassignItem={unassignItem} />
             </div>
           </div>
         )}
@@ -1709,6 +1887,78 @@ export default function App() {
                     </button>
                   ))
                 )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Add Photo to Item Picker ── */}
+        {pickForItem && (
+          <div role="dialog" aria-modal="true" aria-label="Add photo to item"
+            className="fixed inset-0 z-[10001] bg-black/50 flex items-center justify-center p-5 animate-[fadeIn_0.15s_ease-out]"
+            onClick={e => { if (e.target === e.currentTarget) setPickForItem(null) }}>
+            <div className="bg-gray-900 rounded-xl shadow-xl p-5 w-full max-w-sm max-h-[70vh] flex flex-col border border-gray-700">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-slate-100 text-sm font-semibold">📷 Add photo to {pickForItem.name}</h3>
+                <button onClick={() => setPickForItem(null)}
+                  className="bg-none border-none text-slate-400 cursor-pointer hover:text-slate-200 p-1 rounded transition-colors text-lg">✕</button>
+              </div>
+              {pickForItem.imageKey && (
+                <button onClick={() => removeItemPhoto(pickForItem.id)}
+                  className="w-full px-3 py-2 mb-3 text-sm bg-transparent border border-red-500/40 text-red-400 hover:bg-red-500/10 rounded-lg transition-all cursor-pointer">🗑️ Remove current photo</button>
+              )}
+              <input id="pick-photo-search" type="text" placeholder="Search photos..." autoComplete="off"
+                className="w-full px-3 py-2 text-sm bg-slate-800 border border-slate-600 rounded-lg text-slate-100 outline-none focus:border-indigo-500 mb-3"
+                value={pickSearch} onInput={e => setPickSearch((e.currentTarget as HTMLInputElement).value)} />
+              <div className="flex-1 overflow-y-auto space-y-1">
+                {(() => {
+                  const q = pickSearch.toLowerCase()
+                  const used = new Set<string>()
+                  const rows: any[] = []
+                  /* a) Local scanned items */
+                  scannedItems.filter(s => s.imageUrl || s.imageData).forEach(s => {
+                    if (!q || s.name.toLowerCase().includes(q) || s.category.toLowerCase().includes(q) || s.location.toLowerCase().includes(q)) {
+                      if (s.imageUrl) used.add(s.imageUrl)
+                      rows.push(
+                        <div key={`local-${s.id}`} className="w-full flex items-center gap-3 px-3 py-2.5 bg-slate-800 hover:bg-indigo-900/40 border border-slate-700 hover:border-indigo-500/50 rounded-lg text-left transition-all">
+                          <img src={s.imageUrl ?? s.imageData} alt={s.name} className="w-8 h-8 rounded-full flex-shrink-0 object-cover bg-slate-700" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-slate-200 truncate">{s.name}</p>
+                            <p className="text-xs text-slate-500">{s.category} · {s.location}</p>
+                          </div>
+                          <button onClick={() => attachPhotoToItem(pickForItem.id, s.imageUrl ? s.imageUrl.split('/api/photos/')[1] : undefined, s.imageData)}
+                            className="flex-shrink-0 px-2.5 py-1 text-xs font-medium bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 hover:bg-indigo-500/40 hover:text-indigo-200 rounded-lg transition-all cursor-pointer">Attach</button>
+                        </div>
+                      )
+                    }
+                  })
+                  /* b) Server photos (dedupe against already-listed URLs) */
+                  if (photosFromServer) {
+                    Object.values(photosFromServer).flat().forEach((p: any) => {
+                      if (!p || !p.r2_key) return
+                      if (!q || (p.item_name || '').toLowerCase().includes(q) || (p.category || '').toLowerCase().includes(q) || (p.room_location || '').toLowerCase().includes(q)) {
+                        const url = `${AI_SCAN_URL}/api/photos/${p.r2_key}`
+                        if (used.has(url)) return
+                        used.add(url)
+                        rows.push(
+                          <div key={`server-${p.r2_key}`} className="w-full flex items-center gap-3 px-3 py-2.5 bg-slate-800 hover:bg-indigo-900/40 border border-slate-700 hover:border-indigo-500/50 rounded-lg text-left transition-all">
+                            <img src={url} alt={p.item_name || 'Photo'} className="w-8 h-8 rounded-full flex-shrink-0 object-cover bg-slate-700" />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-slate-200 truncate">{p.item_name || 'Untitled'}</p>
+                              <p className="text-xs text-slate-500">{p.category || 'Other'} · {p.room_location || 'Scanned'}</p>
+                            </div>
+                            <button onClick={() => attachPhotoToItem(pickForItem.id, p.r2_key, undefined)}
+                              className="flex-shrink-0 px-2.5 py-1 text-xs font-medium bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 hover:bg-indigo-500/40 hover:text-indigo-200 rounded-lg transition-all cursor-pointer">Attach</button>
+                          </div>
+                        )
+                      }
+                    })
+                  }
+                  if (rows.length === 0) {
+                    return <p className="text-slate-500 text-xs text-center py-6">No photos found.</p>
+                  }
+                  return rows
+                })()}
               </div>
             </div>
           </div>
