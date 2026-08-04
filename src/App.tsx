@@ -46,7 +46,7 @@ interface ScannedItem {
 }
 
 /* ── AI Vision Scan — Cloudflare Worker ── */
-const AI_SCAN_URL = import.meta.env.VITE_AI_SCAN_URL || import.meta.env.VITE_AI_SEARCH_URL || 'http://localhost:8787'
+const AI_SCAN_URL = import.meta.env.VITE_AI_SCAN_URL || import.meta.env.VITE_AI_SEARCH_URL || ''
 
 interface VisionResult {
   itemName: string
@@ -196,7 +196,8 @@ async function fetchPhotos(userId: string): Promise<{ categories: Record<string,
   }
 }
 
-interface ChatResponse { reply: string; reasoning?: string; suggestedItemIds: string[] }
+interface ChatAction { type: 'move_room' | 'assign_zone' | 'unassign' | 'move_and_assign'; itemId: string; label: string; roomId?: string; zoneId?: string }
+interface ChatResponse { reply: string; reasoning?: string; suggestedItemIds: string[]; actions: ChatAction[] }
 
 /* ── AI Chatbot — AI Gateway (OpenAI-compatible) ── */
 const AI_GATEWAY_URL = 'https://ai-gateway.guidesify.com/v1/chat/completions'
@@ -206,34 +207,75 @@ const GEMINI_KEY = import.meta.env.VITE_GEMINI_KEY || ''
 
 async function sendChat(message: string, items: Item[], rooms: Room[], history: Array<{ role: string; content: string }>): Promise<ChatResponse> {
   if (!AI_GATEWAY_KEY) {
-    return { reply: 'AI key not configured. Add VITE_AI_KEY to your .env file to enable the assistant.', suggestedItemIds: [] }
+    return { reply: 'AI key not configured. Add VITE_AI_KEY to your .env file to enable the assistant.', suggestedItemIds: [], actions: [] }
   }
 
-  /* Build inventory context for the prompt */
+  /* Build rich inventory context grouped by room with stats */
   const roomMap = new Map(rooms.map(r => [r.id, r]))
-  const inventoryLines = items.map(item => {
-    const room = roomMap.get(item.roomId)
-    return `- ${item.name} (${item.category}) — ${item.location}, in ${room?.name ?? 'Unknown'} [id:${item.id}]`
+  const groupedByRoom = new Map<string, Item[]>()
+  items.forEach(item => { const list = groupedByRoom.get(item.roomId) || []; list.push(item); groupedByRoom.set(item.roomId, list) })
+
+  const now = Date.now()
+  const staleThreshold = 3 * 24 * 60 * 60 * 1000 // 3 days
+  const staleCount = items.filter(i => new Date(i.lastConfirmed).getTime() < now - staleThreshold).length
+  const unsortedCount = items.filter(i => i.zoneX === -50 && i.zoneY === -50).length
+
+  const inventoryLines: string[] = []
+  groupedByRoom.forEach((roomItems, roomId) => {
+    const room = roomMap.get(roomId)
+    const zones = room?.zones.map(z => `"${z.label}"`).join(', ') || 'none'
+    inventoryLines.push(`## ${room?.name ?? 'Unknown'} [room:${roomId}] (zones: ${zones})`)
+    roomItems.forEach(item => {
+      const lastChecked = Math.round((now - new Date(item.lastConfirmed).getTime()) / (24 * 60 * 60 * 1000))
+      const stale = lastChecked > 3 ? ` ⚠️ last checked ${lastChecked}d ago` : ''
+      const unsorted = item.zoneX === -50 && item.zoneY === -50 ? ' [unsorted]' : ''
+      inventoryLines.push(`- ${item.name} (${item.category}) — ${item.location}${unsorted}${stale} [id:${item.id}]`)
+    })
   })
 
-  const inventoryContext = inventoryLines.length > 0
-    ? `\n\nUSER'S TRACKED INVENTORY:\n${inventoryLines.join('\n')}`
+  const statsLine = `Stats: ${items.length} total items across ${rooms.length} rooms, ${unsortedCount} unsorted, ${staleCount} unchecked in 3+ days.`
+
+  const inventoryContext = items.length > 0
+    ? `\n\nUSER'S INVENTORY (${items.length} items in ${rooms.length} rooms):\n${statsLine}\n\n${inventoryLines.join('\n')}`
     : '\n\nUser has no tracked items yet.'
 
-  const systemPrompt = `You are a lost-item assistant. Help users find things by searching their inventory.
+  const systemPrompt = `You are a home-organizer assistant. Help users manage, find, and organize their belongings.
+
+CAPABILITIES:
+- Find items by name, category, room, or partial match.
+- Summarize what's in each room or category.
+- Identify stale/unchecked items that need attention.
+- Suggest where unsorted items should be stored based on their category.
+- Answer general organization questions (based on your knowledge).
+- When the user asks to move/relocate/assign an item, offer an ACTION.
 
 RULES:
-- First, think step-by-step inside <reasoning> tags (what the user wants, which items match, where they are).
+- First, think step-by-step inside <reasoning> tags (what the user wants, which items match, analysis).
 - Then provide the answer inside <answer> tags.
-- Be concise and friendly in the answer (2-4 sentences max).
+- Be concise, warm, and practical (2-5 sentences).
 - If an item is in the inventory, tell them EXACTLY where it is (room + location).
 - If not found, suggest where they might keep it based on the item category.
-- For category queries, list ALL matching items with their locations.
+- For category/room queries, list ALL matching items with locations.
+- Flag stale items (⚠️ unchecked >3 days) proactively.
 - Include item tracking IDs as [id:UUID] so the app can highlight them.
 
+ACTIONS (use sparingly, only when the user explicitly asks to move/sort/organize):
+- To offer moving an item to a room: <action type="move_room" item="ITEM_UUID" room="ROOM_ID">Move to RoomName</action>
+- To offer placing an item in a zone: <action type="assign_zone" item="ITEM_UUID" zone="ZONE_ID">Place on ZoneLabel</action>
+- To offer removing from map: <action type="unassign" item="ITEM_UUID">Remove from Map</action>
+- When the user asks to move an item to a specific spot in another room (e.g. "move keys to Bedroom, Desk"), use this combined action: <action type="move_and_assign" item="ITEM_UUID" room="ROOM_ID" zone="ZONE_ID">Move to RoomName → ZoneLabel</action>
+- Place action tags INSIDE the <answer> tag, after or between sentences.
+- Only offer actions for items that the user is currently discussing.
+- Never offer delete actions.
+- Always use the EXACT room IDs and zone IDs from the inventory context: rooms are listed as [room:ROOM_ID] and zones as (zones: "Label", "Label"). The zone IDs are the lowercase labels with underscores (e.g. "Nightstand L" → nightstand_l, "Coffee Table" → coffee_table).
+
 Example output:
-<reasoning>The user is asking about their keys. Looking at the inventory, I see "House Keys" in the Living Room on the Coffee Table.</reasoning>
-<answer>Your keys are in the **Living Room** on the Coffee Table. I'd check the bowl by the TV remote. 🔑</answer>${inventoryContext}`
+<reasoning>The user is asking about their keys. Inventory shows "House Keys" in Living Room on Coffee Table.</reasoning>
+<answer>Your keys are in the **Living Room** on the Coffee Table. I'd check the bowl by the TV remote. 🔑</answer>
+
+Example with move action:
+<reasoning>User wants the water bottle moved to Bedroom. "Water Bottle" [id:abc123] is currently in Living Room. Bedroom ID is room-bedroom.</reasoning>
+<answer>Got it! Your Water Bottle is currently in the Living Room. I can move it to the Bedroom for you: <action type="move_room" item="abc123" room="room-bedroom">Move to Bedroom</action></answer>${inventoryContext}`
 
   const messages = [
     { role: 'system', content: systemPrompt },
@@ -248,11 +290,11 @@ Example output:
       body: JSON.stringify({ model: 'free-last-resort', messages, max_tokens: 800, temperature: 0.7 }),
     })
     if (!res.ok) {
-      return { reply: 'AI assistant unavailable right now. Please try again.', suggestedItemIds: [] }
+      return { reply: 'AI assistant unavailable right now. Please try again.', suggestedItemIds: [], actions: [] }
     }
     const data = await res.json()
     const rawContent = data.choices?.[0]?.message?.content?.trim() || ''
-    if (!rawContent) return { reply: 'AI returned an empty response. Please try again.', suggestedItemIds: [] }
+    if (!rawContent) return { reply: 'AI returned an empty response. Please try again.', suggestedItemIds: [], actions: [] }
 
     /* Parse <reasoning> and <answer> tags */
     const reasoningMatch = rawContent.match(/<reasoning>([\s\S]*?)<\/reasoning>/)
@@ -265,11 +307,21 @@ Example output:
     const suggestedItemIds: string[] = []
     let m
     while ((m = idRegex.exec(answer)) !== null) suggestedItemIds.push(m[1])
-    const cleanReply = answer.replace(/\[id:[^\]]+\]/g, '').trim()
+    let cleanReply = answer.replace(/\[id:[^\]]+\]/g, '').trim()
 
-    return { reply: cleanReply || 'I found some information for you.', reasoning, suggestedItemIds }
+    /* Parse <action> tags for tool-calling */
+    const actionRegex = /<action\s+type="(\w+)"\s+item="([^"]+)"(?:\s+room="([^"]*)")?(?:\s+zone="([^"]*)")?\s*>([\s\S]*?)<\/action>/g
+    const actions: ChatAction[] = []
+    let am
+    while ((am = actionRegex.exec(answer)) !== null) {
+      actions.push({ type: am[1] as ChatAction['type'], itemId: am[2], roomId: am[3] || undefined, zoneId: am[4] || undefined, label: am[5].trim() })
+      cleanReply = cleanReply.replace(am[0], '')
+    }
+    cleanReply = cleanReply.replace(/\s{2,}/g, ' ').trim()
+
+    return { reply: cleanReply || 'I found some information for you.', reasoning, suggestedItemIds, actions }
   } catch {
-    return { reply: 'Sorry, could not reach the AI service. Please try again.', suggestedItemIds: [] }
+    return { reply: 'Sorry, could not reach the AI service. Please try again.', suggestedItemIds: [], actions: [] }
   }
 }
 
@@ -377,10 +429,10 @@ function categoryIcon(cat: string) {
 /* ── Room Map Panel ── */
 
 function RoomMapPanel({
-  room, roomItems, selectedZone, glowingItemId, glowingZoneId, isEditingMap, onClose,
-  onToggleEdit, onZoneMove, onSelectZone, onPinClick, onAddFurniture, onDeleteZone, onAssignItem, onUnassignItem,
+  room, rooms, currentRoomId, roomItems, selectedZone, glowingItemId, glowingZoneId, isEditingMap, onClose,
+  onToggleEdit, onZoneMove, onSelectZone, onPinClick, onAddFurniture, onDeleteZone, onAssignItem, onUnassignItem, onMoveToRoom,
 }: {
-  room: Room; roomItems: Item[]; selectedZone: string | null; glowingItemId: string | null; glowingZoneId: string | null;
+  room: Room; rooms: Room[]; currentRoomId: string; roomItems: Item[]; selectedZone: string | null; glowingItemId: string | null; glowingZoneId: string | null;
   isEditingMap: boolean; onClose?: () => void;
   onToggleEdit: () => void;
   onZoneMove: (roomId: string, zoneId: string, x: number, y: number) => void;
@@ -390,6 +442,7 @@ function RoomMapPanel({
   onDeleteZone: (roomId: string, zoneId: string) => void;
   onAssignItem: (itemId: string, zoneId: string) => void;
   onUnassignItem: (itemId: string) => void;
+  onMoveToRoom: (itemId: string, roomId: string) => void;
 }) {
   const dragStateRef = useRef<{ roomId: string; zoneId: string } | null>(null)
   const [dropZoneId, setDropZoneId] = useState<string | null>(null)
@@ -560,6 +613,11 @@ function RoomMapPanel({
             {room.zones.map(z => (
               <button key={z.id} type="button" onClick={() => { onAssignItem(assignItemId, z.id); setAssignItemId(null) }} className="block w-full text-left px-3 py-2 text-xs hover:bg-indigo-50 dark:hover:bg-gray-700 rounded-md">{z.label}</button>
             ))}
+            <div className="border-t my-1" />
+            <div className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 px-3 py-1">Move to Room:</div>
+            {rooms.filter(r => r.id !== currentRoomId).map(r => (
+              <button key={r.id} type="button" onClick={() => { onMoveToRoom(assignItemId, r.id); setAssignItemId(null) }} className="block w-full text-left px-3 py-2 text-xs hover:bg-emerald-50 dark:hover:bg-emerald-900/30 rounded-md">🏠 {r.name}</button>
+            ))}
           </div>
         </>
       )
@@ -608,8 +666,10 @@ export default function App() {
   const [onboardingStep, setOnboardingStep] = useState<1 | 2>(1)
   const [showMobileMap, setShowMobileMap] = useState(false)
   const [showChat, setShowChat] = useState(false)
-  const [chatMessages, setChatMessages] = useState<Array<{role:'user'|'assistant';content:string;reasoning?:string;suggestedIds:string[]}>>([])
+  const [chatMessages, setChatMessages] = useState<Array<{role:'user'|'assistant';content:string;reasoning?:string;suggestedIds:string[];actions?:ChatAction[]}>>([])
   const [chatLoading, setChatLoading] = useState(false)
+  const [doneActions, setDoneActions] = useState<string[]>([])
+  const [failedActions, setFailedActions] = useState<string[]>([])
   const [chatInput, setChatInput] = useState('')
   const chatEndRef = useRef<HTMLDivElement>(null)
   const chatInputRef = useRef<HTMLInputElement>(null)
@@ -808,14 +868,19 @@ export default function App() {
     setRooms(prev => prev.map(r => r.id === roomId ? { ...r, zones: r.zones.filter(z => z.id !== zoneId) } : r))
   }
 
-  function assignItemToZone(itemId: string, zoneId: string) {
-    const room = rooms.find(r => r.id === currentRoomId)
+  function assignItemToZone(itemId: string, zoneId: string, roomId?: string) {
+    const room = rooms.find(r => r.id === (roomId || currentRoomId))
     const zone = room?.zones.find(z => z.id === zoneId)
     if (!zone) return
     setItems(prev => prev.map(i => i.id === itemId ? { ...i, zoneX: zone.x, zoneY: zone.y, location: zone.label, lastConfirmed: new Date().toISOString() } : i))
   }
   function unassignItem(itemId: string) {
     setItems(prev => prev.map(i => i.id === itemId ? { ...i, zoneX: -50, zoneY: -50, location: 'Unsorted', lastConfirmed: new Date().toISOString() } : i))
+  }
+
+  function moveItemToRoom(itemId: string, newRoomId: string) {
+    if (!rooms.find(r => r.id === newRoomId)) { console.error('moveItemToRoom: invalid room', newRoomId); return }
+    setItems(prev => prev.map(i => i.id === itemId ? { ...i, roomId: newRoomId, zoneX: -50, zoneY: -50, location: 'Unsorted', lastConfirmed: new Date().toISOString() } : i))
   }
 
   function addItem(name: string, location: string, category: string, zoneX = 50, zoneY = 50, imageKey?: string) {
@@ -825,8 +890,8 @@ export default function App() {
     }])
   }
 
-  function updateItem(id: string, name: string, location: string, category: string) {
-    setItems(prev => prev.map(i => i.id === id ? { ...i, name, location, category, lastConfirmed: new Date().toISOString() } : i))
+  function updateItem(id: string, name: string, location: string, category: string, zoneX?: number, zoneY?: number) {
+    setItems(prev => prev.map(i => i.id === id ? { ...i, name, location, category, ...(zoneX !== undefined ? { zoneX, zoneY } : {}), lastConfirmed: new Date().toISOString() } : i))
   }
 
   function deleteItem(id: string) { setItems(prev => prev.filter(i => i.id !== id)) }
@@ -1009,18 +1074,18 @@ export default function App() {
     }).catch(() => {})
 
     const newItem: ScannedItem = {
-      id: newItemId, name: name || 'Unknown Item', category, location: 'Scanned',
+      id: newItemId, name: name || 'Unknown Item', category, location: 'Unsorted',
       imageData: capturedImage, // base64 fallback until R2 completes
-      roomId: currentRoomId, zoneX: 50, zoneY: 50,
+      roomId: currentRoomId, zoneX: -50, zoneY: -50,
       createdAt: formatDate(new Date()), lastConfirmed: new Date().toISOString(),
       aiDetected: !!scanResult?.name,
     }
     setScannedItems(prev => [newItem, ...prev])
     // Add to main items with known ID (imageKey patched later on R2 completion)
     setItems(prev => [...prev, {
-      id: mainItemId, name: name || 'Unknown Item', location: 'Scanned', category,
+      id: mainItemId, name: name || 'Unknown Item', location: 'Unsorted', category,
       roomId: currentRoomId, createdAt: formatDate(new Date()),
-      lastConfirmed: new Date().toISOString(), zoneX: 50, zoneY: 50,
+      lastConfirmed: new Date().toISOString(), zoneX: -50, zoneY: -50,
     }])
     setShowConfetti(true); setTimeout(() => setShowConfetti(false), 1500)
     closeScanner()
@@ -1114,6 +1179,60 @@ export default function App() {
   }
 
   /* ── Chatbot ── */
+  function executeAction(action: ChatAction) {
+    let item = items.find(i => i.id === action.itemId)
+    /* Fallback: match by name when AI can't reliably copy UUIDs */
+    if (!item) item = items.find(i => i.name.toLowerCase().trim() === action.itemId.toLowerCase().trim())
+    if (!item) {
+      console.error('Chat action failed — item not found', { actionId: action.itemId, type: action.type, available: items.map(i => `${i.id}=${i.name}`) })
+      return false
+    }
+    /* Resolve room/zone IDs with name fallback (AI may hallucinate IDs) */
+    let resolvedRoomId = action.roomId
+    if (resolvedRoomId && !rooms.find(r => r.id === resolvedRoomId)) {
+      const rm = rooms.find(r => r.name.toLowerCase().trim() === resolvedRoomId.toLowerCase().trim())
+      if (rm) resolvedRoomId = rm.id
+      else { console.error('Chat action failed — room not found', { roomId: action.roomId, available: rooms.map(r => `${r.id}=${r.name}`) }); return false }
+    }
+    let resolvedZoneId = action.zoneId
+    if (resolvedZoneId) {
+      const room = rooms.find(r => r.id === currentRoomId)
+      if (room && !room.zones.find(z => z.id === resolvedZoneId)) {
+        const zn = room.zones.find(z => z.label.toLowerCase().trim() === resolvedZoneId.toLowerCase().trim())
+        if (zn) resolvedZoneId = zn.id
+        else { console.error('Chat action failed — zone not found', { zoneId: action.zoneId, available: room.zones.map(z => `${z.id}=${z.label}`) }); return false }
+      }
+    }
+    switch (action.type) {
+      case 'move_room':
+        if (resolvedRoomId) { moveItemToRoom(item.id, resolvedRoomId); return true }
+        console.error('Chat action failed — move_room missing roomId', action)
+        return false
+      case 'assign_zone':
+        if (resolvedZoneId) { assignItemToZone(item.id, resolvedZoneId); return true }
+        console.error('Chat action failed — assign_zone missing zoneId', action)
+        return false
+      case 'move_and_assign': {
+        if (!resolvedRoomId || !action.zoneId) { console.error('Chat action failed — move_and_assign missing room or zone', action); return false }
+        const targetRoom = rooms.find(r => r.id === resolvedRoomId)
+        if (!targetRoom) { console.error('Chat action failed — target room not found', { resolvedRoomId }); return false }
+        let targetZoneId = action.zoneId
+        if (!targetRoom.zones.find(z => z.id === targetZoneId)) {
+          const zn = targetRoom.zones.find(z => z.label.toLowerCase().trim() === targetZoneId.toLowerCase().trim())
+          if (zn) targetZoneId = zn.id
+          else { console.error('Chat action failed — zone not found in target room', { zoneId: action.zoneId, targetRoom: resolvedRoomId, available: targetRoom.zones.map(z => `${z.id}=${z.label}`) }); return false }
+        }
+        moveItemToRoom(item.id, resolvedRoomId)
+        assignItemToZone(item.id, targetZoneId, resolvedRoomId)
+        return true
+      }
+      case 'unassign':
+        unassignItem(item.id); return true
+      default:
+        return false
+    }
+  }
+
   function handleChatSend(e?: React.FormEvent, preset?: string) {
     e?.preventDefault()
     const msg = (preset ?? chatInput).trim()
@@ -1126,7 +1245,7 @@ export default function App() {
     const history = [...chatMessages.map(m => ({ role: m.role, content: m.content })), { role: 'user' as const, content: msg }]
     sendChat(msg, items, rooms, history)
       .then(res => {
-        setChatMessages(prev => [...prev, { role: 'assistant', content: res.reply, reasoning: res.reasoning, suggestedIds: res.suggestedItemIds || [] }])
+        setChatMessages(prev => [...prev, { role: 'assistant', content: res.reply, reasoning: res.reasoning, suggestedIds: res.suggestedItemIds || [], actions: res.actions || [] }])
         /* If AI suggested items, highlight them */
         if (res.suggestedItemIds?.length > 0) {
           const firstItem = items.find(i => res.suggestedItemIds.includes(i.id))
@@ -1556,7 +1675,7 @@ export default function App() {
 
             {/* Map Panel */}
             <div className="sticky top-5 max-md:hidden">
-              <RoomMapPanel room={room} roomItems={roomItems} selectedZone={selectedZone} glowingItemId={glowingItemId} glowingZoneId={glowingZoneId} isEditingMap={isEditingMap} onToggleEdit={() => setIsEditingMap(v => !v)} onZoneMove={(rid, zid, x, y) => setRooms(prev => prev.map(r => r.id === rid ? { ...r, zones: r.zones.map(z => z.id === zid ? { ...z, x, y } : z) } : r))} onSelectZone={setSelectedZone} onPinClick={(id) => setGlowingItemId(glowingItemId === id ? null : id)} onAddFurniture={async (rid) => { const n = await showInlinePrompt('Furniture name (e.g. Nightstand, Pantry):'); if (n && n.trim()) addZone(rid, n.trim()) }} onDeleteZone={deleteZone} onAssignItem={assignItemToZone} onUnassignItem={unassignItem} />
+              <RoomMapPanel room={room} roomItems={roomItems} selectedZone={selectedZone} glowingItemId={glowingItemId} glowingZoneId={glowingZoneId} isEditingMap={isEditingMap} onToggleEdit={() => setIsEditingMap(v => !v)} onZoneMove={(rid, zid, x, y) => setRooms(prev => prev.map(r => r.id === rid ? { ...r, zones: r.zones.map(z => z.id === zid ? { ...z, x, y } : z) } : r))} onSelectZone={setSelectedZone} onPinClick={(id) => setGlowingItemId(glowingItemId === id ? null : id)} onAddFurniture={async (rid) => { const n = await showInlinePrompt('Furniture name (e.g. Nightstand, Pantry):'); if (n && n.trim()) addZone(rid, n.trim()) }} onDeleteZone={deleteZone} onAssignItem={assignItemToZone} onUnassignItem={unassignItem} onMoveToRoom={moveItemToRoom} rooms={rooms} currentRoomId={currentRoomId} />
             </div>
           </div>
         </div>
@@ -1565,7 +1684,7 @@ export default function App() {
         {showMobileMap && (
           <div className="fixed inset-0 z-[60] bg-white dark:bg-gray-800 flex flex-col animate-[fadeIn_0.2s_ease-out] md:hidden">
             <div className="flex-1 p-4 overflow-auto">
-              <RoomMapPanel room={room} roomItems={roomItems} selectedZone={selectedZone} glowingItemId={glowingItemId} glowingZoneId={glowingZoneId} isEditingMap={isEditingMap} onClose={() => setShowMobileMap(false)} onToggleEdit={() => setIsEditingMap(v => !v)} onZoneMove={(rid, zid, x, y) => setRooms(prev => prev.map(r => r.id === rid ? { ...r, zones: r.zones.map(z => z.id === zid ? { ...z, x, y } : z) } : r))} onSelectZone={setSelectedZone} onPinClick={(id) => setGlowingItemId(glowingItemId === id ? null : id)} onAddFurniture={async (rid) => { const n = await showInlinePrompt('Furniture name (e.g. Nightstand, Pantry):'); if (n && n.trim()) addZone(rid, n.trim()) }} onDeleteZone={deleteZone} onAssignItem={assignItemToZone} onUnassignItem={unassignItem} />
+              <RoomMapPanel room={room} roomItems={roomItems} selectedZone={selectedZone} glowingItemId={glowingItemId} glowingZoneId={glowingZoneId} isEditingMap={isEditingMap} onClose={() => setShowMobileMap(false)} onToggleEdit={() => setIsEditingMap(v => !v)} onZoneMove={(rid, zid, x, y) => setRooms(prev => prev.map(r => r.id === rid ? { ...r, zones: r.zones.map(z => z.id === zid ? { ...z, x, y } : z) } : r))} onSelectZone={setSelectedZone} onPinClick={(id) => setGlowingItemId(glowingItemId === id ? null : id)} onAddFurniture={async (rid) => { const n = await showInlinePrompt('Furniture name (e.g. Nightstand, Pantry):'); if (n && n.trim()) addZone(rid, n.trim()) }} onDeleteZone={deleteZone} onAssignItem={assignItemToZone} onUnassignItem={unassignItem} onMoveToRoom={moveItemToRoom} rooms={rooms} currentRoomId={currentRoomId} />
             </div>
           </div>
         )}
@@ -1979,10 +2098,14 @@ export default function App() {
                 e.preventDefault()
                 const fd = new FormData(e.currentTarget)
                 const name = fd.get('name') as string; const location = fd.get('location') as string; const category = fd.get('category') as string
+                const roomId = fd.get('roomId') as string
                 const pin = document.getElementById('mini-pin')
                 const zx = pin && pin.style.left ? parseFloat(pin.style.left) : (editingItem?.zoneX ?? 50)
                 const zy = pin && pin.style.top ? parseFloat(pin.style.top) : (editingItem?.zoneY ?? 50)
-                if (editingItem) updateItem(editingItem.id, name, location, category)
+                if (editingItem) {
+                  updateItem(editingItem.id, name, location, category, zx, zy)
+                  if (roomId && roomId !== editingItem.roomId) moveItemToRoom(editingItem.id, roomId)
+                }
                 else addItem(name, location, category, zx, zy)
                 setShowAddModal(false); setEditingItem(null)
               }} className="flex flex-col gap-4">
@@ -1995,6 +2118,13 @@ export default function App() {
                   <label className="text-xs font-semibold text-gray-700 dark:text-gray-200">Location</label>
                   <input name="location" defaultValue={editingItem?.location || ''} placeholder="e.g. Top desk drawer" required
                     className="px-4 py-2.5 border border-gray-200 dark:border-gray-600 rounded-lg text-sm outline-none focus:border-indigo-500 focus:ring-3 focus:ring-indigo-500/40 bg-white dark:bg-gray-700 dark:text-gray-100" />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-semibold text-gray-700 dark:text-gray-200">Room</label>
+                  <select name="roomId" defaultValue={editingItem?.roomId || currentRoomId}
+                    className="px-4 py-2.5 border border-gray-200 dark:border-gray-600 rounded-lg text-sm outline-none focus:border-indigo-500 focus:ring-3 focus:ring-indigo-500/40 bg-white dark:bg-gray-700 dark:text-gray-100">
+                    {rooms.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+                  </select>
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <label className="text-xs font-semibold text-gray-700 dark:text-gray-200">Category</label>
@@ -2157,6 +2287,23 @@ export default function App() {
                                 📍 {item.name}
                               </button>
                             )
+                          })}
+                        </div>
+                      )}
+                      {m.actions?.length > 0 && (
+                        <div className="mt-2 pt-2 border-t border-gray-200 dark:border-gray-700 flex flex-wrap gap-1.5">
+                          {m.actions.map((action, ai) => {
+                            const key = `${i}_${ai}`
+                            if (doneActions.includes(key)) return <span key={key} className="px-2.5 py-1.5 text-[11px] rounded-lg font-medium bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-500/30">✅ {action.label}</span>
+                            if (failedActions.includes(key)) return <span key={key} className="px-2.5 py-1.5 text-[11px] rounded-lg font-medium bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 border border-red-300 dark:border-red-500/30">❌ {action.label}</span>
+                            return <button key={key} onClick={() => {
+                              const ok = executeAction(action)
+                              if (ok) setDoneActions(prev => [...prev, key])
+                              else { setFailedActions(prev => [...prev, key]); setTimeout(() => setFailedActions(prev => prev.filter(k => k !== key)), 2500) }
+                            }}
+                              className="px-2.5 py-1.5 text-[11px] rounded-lg font-medium border cursor-pointer transition-all touch-manipulation bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 border-gray-300 dark:border-gray-600 hover:border-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-500/20">
+                              ⚡ {action.label}
+                            </button>
                           })}
                         </div>
                       )}
