@@ -223,7 +223,7 @@ async function sendChat(message: string, items: Item[], rooms: Room[], history: 
   const inventoryLines: string[] = []
   groupedByRoom.forEach((roomItems, roomId) => {
     const room = roomMap.get(roomId)
-    const zones = room?.zones.map(z => `"${z.label}"`).join(', ') || 'none'
+    const zones = room?.zones.map(z => `${z.id}="${z.label}"`).join(', ') || 'none'
     inventoryLines.push(`## ${room?.name ?? 'Unknown'} [room:${roomId}] (zones: ${zones})`)
     roomItems.forEach(item => {
       const lastChecked = Math.round((now - new Date(item.lastConfirmed).getTime()) / (24 * 60 * 60 * 1000))
@@ -267,7 +267,7 @@ ACTIONS (use sparingly, only when the user explicitly asks to move/sort/organize
 - Place action tags INSIDE the <answer> tag, after or between sentences.
 - Only offer actions for items that the user is currently discussing.
 - Never offer delete actions.
-- Always use the EXACT room IDs and zone IDs from the inventory context: rooms are listed as [room:ROOM_ID] and zones as (zones: "Label", "Label"). The zone IDs are the lowercase labels with underscores (e.g. "Nightstand L" → nightstand_l, "Coffee Table" → coffee_table).
+- Always use the EXACT room IDs and zone IDs from the inventory context. Rooms: [room:ROOM_ID]. Zones: id="Label" pairs — copy the id directly (e.g. desk, nightstand_l, cabinet).
 
 Example output:
 <reasoning>The user is asking about their keys. Inventory shows "House Keys" in Living Room on Coffee Table.</reasoning>
@@ -275,7 +275,11 @@ Example output:
 
 Example with move action:
 <reasoning>User wants the water bottle moved to Bedroom. "Water Bottle" [id:abc123] is currently in Living Room. Bedroom ID is room-bedroom.</reasoning>
-<answer>Got it! Your Water Bottle is currently in the Living Room. I can move it to the Bedroom for you: <action type="move_room" item="abc123" room="room-bedroom">Move to Bedroom</action></answer>${inventoryContext}`
+<answer>Got it! Your Water Bottle is currently in the Living Room. I can move it to the Bedroom for you: <action type="move_room" item="abc123" room="room-bedroom">Move to Bedroom</action></answer>
+
+Example with combined move-and-place (when user specifies both room AND spot):
+<reasoning>User wants keys moved to Bedroom, Nightstand. "House Keys" [id:xyz789] is in Living Room. Bedroom is [room:room-bedroom] with zones nightstand_l="Nightstand L".</reasoning>
+<answer>Sure! Here's a one-click move for your keys: <action type="move_and_assign" item="xyz789" room="room-bedroom" zone="nightstand_l">Move to Bedroom → Nightstand L</action></answer>${inventoryContext}`
 
   const messages = [
     { role: 'system', content: systemPrompt },
@@ -287,7 +291,7 @@ Example with move action:
     const res = await fetch(AI_GATEWAY_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${AI_GATEWAY_KEY}` },
-      body: JSON.stringify({ model: 'free-last-resort', messages, max_tokens: 800, temperature: 0.7 }),
+      body: JSON.stringify({ model: 'free-last-resort', messages, max_tokens: 1500, temperature: 0.5 }),
     })
     if (!res.ok) {
       return { reply: 'AI assistant unavailable right now. Please try again.', suggestedItemIds: [], actions: [] }
@@ -296,28 +300,52 @@ Example with move action:
     const rawContent = data.choices?.[0]?.message?.content?.trim() || ''
     if (!rawContent) return { reply: 'AI returned an empty response. Please try again.', suggestedItemIds: [], actions: [] }
 
+    /* ── Pure helpers (mirrored in test-parser.js) ── */
+    /* Tolerant <answer> extraction: inner text if </answer> exists, else everything after <answer>, else raw */
+    const extractAnswer = (raw: string): string => {
+      const start = raw.indexOf('<answer>')
+      const end = raw.indexOf('</answer>')
+      if (start === -1) return raw.trim()
+      const inner = start + '<answer>'.length
+      return (end !== -1 && end > inner ? raw.slice(inner, end) : raw.slice(inner)).trim()
+    }
+
+    /* Sanitize: strip ALL leftover markup (complete or truncated/unclosed fragments) so raw XML never shows */
+    const sanitizeChatText = (text: string): string =>
+      text
+        .replace(/<reasoning>[\s\S]*?(?:<\/reasoning>|$)/g, '')  /* reasoning blocks (incl. truncated) */
+        .replace(/<\/reasoning>/g, '')                           /* stray reasoning close tags */
+        .replace(/<\/?answer>/g, '')                             /* stray answer tags */
+        .replace(/<action[\s\S]*?(?:<\/action>|$)/g, '')        /* action tags + truncated/unclosed fragments */
+        .replace(/<\/action>/g, '')                              /* stray action close tags */
+        .replace(/\[id:[^\]]+\]/g, '')                           /* id highlight tags */
+        .replace(/\s{2,}/g, ' ')
+        .trim()
+
+    /* Only well-formed complete <action ...>...</action> tags produce actions */
+    const parseActions = (text: string): ChatAction[] => {
+      const actionRegex = /<action\s+type="(\w+)"\s+item="([^"]+)"(?:\s+room="([^"]*)")?(?:\s+zone="([^"]*)")?\s*>([\s\S]*?)<\/action>/g
+      const result: ChatAction[] = []
+      let am
+      while ((am = actionRegex.exec(text)) !== null) {
+        result.push({ type: am[1] as ChatAction['type'], itemId: am[2], roomId: am[3] || undefined, zoneId: am[4] || undefined, label: am[5].trim() })
+      }
+      return result
+    }
+
     /* Parse <reasoning> and <answer> tags */
     const reasoningMatch = rawContent.match(/<reasoning>([\s\S]*?)<\/reasoning>/)
-    const answerMatch = rawContent.match(/<answer>([\s\S]*?)<\/answer>/)
     const reasoning = reasoningMatch ? reasoningMatch[1].trim() : undefined
-    const answer = answerMatch ? answerMatch[1].trim() : rawContent.replace(/<reasonation>[\s\S]*?<\/reasonation>/g, '').replace(/<reasoning>[\s\S]*?<\/reasoning>/g, '').trim()
+    const answer = extractAnswer(rawContent)
 
     /* Extract [id:...] tags for item highlighting */
     const idRegex = /\[id:([^\]]+)\]/g
     const suggestedItemIds: string[] = []
     let m
     while ((m = idRegex.exec(answer)) !== null) suggestedItemIds.push(m[1])
-    let cleanReply = answer.replace(/\[id:[^\]]+\]/g, '').trim()
 
-    /* Parse <action> tags for tool-calling */
-    const actionRegex = /<action\s+type="(\w+)"\s+item="([^"]+)"(?:\s+room="([^"]*)")?(?:\s+zone="([^"]*)")?\s*>([\s\S]*?)<\/action>/g
-    const actions: ChatAction[] = []
-    let am
-    while ((am = actionRegex.exec(answer)) !== null) {
-      actions.push({ type: am[1] as ChatAction['type'], itemId: am[2], roomId: am[3] || undefined, zoneId: am[4] || undefined, label: am[5].trim() })
-      cleanReply = cleanReply.replace(am[0], '')
-    }
-    cleanReply = cleanReply.replace(/\s{2,}/g, ' ').trim()
+    const actions = parseActions(answer)
+    const cleanReply = sanitizeChatText(answer)
 
     return { reply: cleanReply || 'I found some information for you.', reasoning, suggestedItemIds, actions }
   } catch {
