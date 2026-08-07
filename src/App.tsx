@@ -64,49 +64,14 @@ interface MatchResult {
 }
 
 async function visionScan(base64Image: string, userId: string, roomName = 'Unknown', location = 'Scanned'): Promise<VisionResult | null> {
-  /* Gemini 2.5 Flash — primary vision scan */
-  if (GEMINI_KEY) {
-    try {
-      const res = await fetch(`${GEMINI_URL}?key=${GEMINI_KEY}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{
-            parts: [
-              { text: `You are an item identification assistant. Look at this photo and identify the single most prominent item. Return ONLY valid JSON with keys: "itemName", "confidence" ("high"/"medium"/"low"), "distinctFeatures" (array of 2-4 strings), "suggestedCategory" (one of: Documents, Keys, Electronics, Valuables, Warranties, Other), "description" (one short sentence). Example: {"itemName":"Passport","confidence":"high","distinctFeatures":["Red cover","Gold emblem"],"suggestedCategory":"Documents","description":"A travel document kept in a drawer"}` },
-              { inline_data: { mime_type: (base64Image.split(',')[0].match(/data:(.*?)(;|$)/)?.[1] || 'image/jpeg'), data: base64Image.split(',')[1] || base64Image } },
-            ],
-          }],
-          generationConfig: { responseMimeType: 'application/json' },
-        }),
-      })
-      if (res.ok) {
-        const data = await res.json()
-        const raw = data.candidates?.[0]?.content?.parts?.[0]?.text
-        if (raw) {
-          let parsed: any
-          try {
-            parsed = JSON.parse(raw)
-          } catch {
-            const jsonMatch = raw.match(/\{[\s\S]*\}/)
-            parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : null
-          }
-          if (parsed?.itemName) return parsed
-        }
-      }
-    } catch {
-      /* fall through to AI Gateway fallback */
-    }
-  }
-
-  /* AI Gateway — mimo-v2.5 vision scan (no fallback) */
+  /* AI Gateway — free model vision scan */
   if (!AI_GATEWAY_KEY) return null
   try {
     const res = await fetch(AI_GATEWAY_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${AI_GATEWAY_KEY}` },
       body: JSON.stringify({
-        model: 'mimo-v2.5',
+        model: 'free',
         messages: [{
           role: 'user',
           content: [
@@ -202,8 +167,6 @@ interface ChatResponse { reply: string; reasoning?: string; suggestedItemIds: st
 /* ── AI Chatbot — AI Gateway (OpenAI-compatible) ── */
 const AI_GATEWAY_URL = 'https://ai-gateway.guidesify.com/v1/chat/completions'
 const AI_GATEWAY_KEY = import.meta.env.VITE_AI_KEY || ''
-const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent'
-const GEMINI_KEY = import.meta.env.VITE_GEMINI_KEY || ''
 
 async function sendChat(message: string, items: Item[], rooms: Room[], history: Array<{ role: string; content: string }>): Promise<ChatResponse> {
   if (!AI_GATEWAY_KEY) {
