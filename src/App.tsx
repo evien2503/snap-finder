@@ -34,19 +34,18 @@ async function aiVectorSearch(
 
 interface Zone { id: string; label: string; x: number; y: number }
 interface Room { id: string; name: string; zones: Zone[] }
-interface Item { id: string; name: string; location: string; category: string; roomId: string; createdAt: string; lastConfirmed: string; zoneX: number; zoneY: number; imageKey?: string }
+interface Item { id: string; name: string; location: string; category: string; roomId: string; createdAt: string; lastConfirmed: string; zoneX: number; zoneY: number }
 interface User { email: string; password: string }
 interface ScannedItem {
   id: string; name: string; category: string; location: string
-  imageData?: string  // legacy base64 JPEG (fallback if no R2)
-  imageUrl?: string   // R2-served URL: {AI_SCAN_URL}/api/photos/{r2_key}
+  imageData: string  // base64 JPEG
   roomId: string; zoneX: number; zoneY: number
   createdAt: string; lastConfirmed: string
   aiDetected: boolean  // true = AI recognized it, false = manual entry
 }
 
 /* ── AI Vision Scan — Cloudflare Worker ── */
-const AI_SCAN_URL = import.meta.env.VITE_AI_SCAN_URL || import.meta.env.VITE_AI_SEARCH_URL || ''
+const AI_SCAN_URL = import.meta.env.VITE_AI_SCAN_URL || import.meta.env.VITE_AI_SEARCH_URL || 'http://localhost:8787'
 
 interface VisionResult {
   itemName: string
@@ -64,48 +63,43 @@ interface MatchResult {
 }
 
 async function visionScan(base64Image: string, userId: string, roomName = 'Unknown', location = 'Scanned'): Promise<VisionResult | null> {
-  /* PRIMARY: Gateway vision via worker proxy (avoids browser CORS). mimo-v2.5 handled server-side. */
-  if (AI_GATEWAY_KEY && AI_SCAN_URL) {
-    try {
-      const res = await fetch(`${AI_SCAN_URL}/api/vision`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-ai-key': AI_GATEWAY_KEY },
-        body: JSON.stringify({ image: base64Image, roomName, location }),
-      })
-      if (res.ok) {
-        const data = await res.json()
-        const msg = data.choices?.[0]?.message
-        /* mimo is a reasoning model — try final answer (content) first, then reasoning */
-        const candidate = (msg?.content || msg?.reasoning_content || '').toString()
-        /* Strip markdown code fences, then extract first balanced JSON object */
-        const cleaned = candidate.replace(/```[a-z]*\s*/gi, '').replace(/```/g, '')
-        const open = cleaned.indexOf('{')
-        if (open >= 0) {
-          let depth = 0
-          for (let i = open; i < cleaned.length; i++) {
-            if (cleaned[i] === '{') depth++
-            else if (cleaned[i] === '}') { depth--; if (depth === 0) { try { return JSON.parse(cleaned.slice(open, i + 1)) } catch { /* continue */ } } }
-          }
-        }
+  /* Direct browser → AI Gateway (mimo-v2.5, company AI). Gateway serves CORS for this origin. */
+  if (!AI_GATEWAY_KEY) return null
+  try {
+    const res = await fetch(AI_GATEWAY_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${AI_GATEWAY_KEY}` },
+      body: JSON.stringify({
+        model: 'mimo-v2.5',
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: `You are an item identification assistant. Look at this photo and identify the single most prominent item. Return ONLY valid JSON with keys: "itemName", "confidence" ("high"/"medium"/"low"), "distinctFeatures" (array of 2-4 strings), "suggestedCategory" (one of: Documents, Keys, Electronics, Valuables, Warranties, Other), "description" (one short sentence). Example: {"itemName":"Passport","confidence":"high","distinctFeatures":["Red cover","Gold emblem"],"suggestedCategory":"Documents","description":"A travel document kept in a drawer"}` },
+            { type: 'image_url', image_url: { url: base64Image } },
+          ],
+        }],
+        max_tokens: 2000,
+      }),
+    })
+    if (!res.ok) return null
+    const data = await res.json()
+    const msg = data.choices?.[0]?.message
+    /* mimo is a reasoning model — try final answer (content) first, then reasoning */
+    const candidate = (msg?.content || msg?.reasoning_content || '').toString()
+    /* Strip markdown code fences, then extract first balanced JSON object */
+    const cleaned = candidate.replace(/```[a-z]*\s*/gi, '').replace(/```/g, '')
+    const open = cleaned.indexOf('{')
+    if (open >= 0) {
+      let depth = 0
+      for (let i = open; i < cleaned.length; i++) {
+        if (cleaned[i] === '{') depth++
+        else if (cleaned[i] === '}') { depth--; if (depth === 0) { try { return JSON.parse(cleaned.slice(open, i + 1)) } catch { /* continue */ } } }
       }
-    } catch { /* fall through to worker */ }
-  }
-
-  /* FALLBACK: Cloudflare Worker /api/scan (own vision model) */
-  if (AI_SCAN_URL) {
-    try {
-      const res = await fetch(`${AI_SCAN_URL}/api/scan`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: base64Image, userId, roomName, location }),
-      })
-      if (!res.ok) return null
-      return await res.json()
-    } catch {
-      return null
     }
+    return null
+  } catch {
+    return null
   }
-  return null
 }
 
 async function visionMatch(base64Image: string, userId: string): Promise<MatchResult | null> {
@@ -137,47 +131,7 @@ async function fetchScanHistory(userId: string): Promise<any[]> {
   }
 }
 
-/* ── R2 Photo Upload / Fetch ── */
-async function uploadPhoto(
-  base64Image: string,
-  userId: string,
-  itemName: string,
-  category: string,
-  roomLocation: string
-): Promise<{ id: string; r2Key: string } | null> {
-  try {
-    /* Convert base64 → Blob → File for FormData */
-    const blobResp = await fetch(base64Image)
-    const blob = await blobResp.blob()
-    const file = new File([blob], `scan_${Date.now()}.jpg`, { type: 'image/jpeg' })
-
-    const form = new FormData()
-    form.append('image', file)
-    form.append('userId', userId)
-    form.append('itemName', itemName)
-    form.append('category', category)
-    form.append('roomLocation', roomLocation)
-
-    const res = await fetch(`${AI_SCAN_URL}/api/photos/upload`, { method: 'POST', body: form })
-    if (!res.ok) return null
-    return await res.json()
-  } catch {
-    return null
-  }
-}
-
-async function fetchPhotos(userId: string): Promise<{ categories: Record<string, any[]>; total: number }> {
-  try {
-    const res = await fetch(`${AI_SCAN_URL}/api/photos?userId=${encodeURIComponent(userId)}`)
-    if (!res.ok) return { categories: {}, total: 0 }
-    return await res.json()
-  } catch {
-    return { categories: {}, total: 0 }
-  }
-}
-
-interface ChatAction { type: 'move_room' | 'assign_zone' | 'unassign' | 'move_and_assign'; itemId: string; label: string; roomId?: string; zoneId?: string }
-interface ChatResponse { reply: string; reasoning?: string; suggestedItemIds: string[]; actions: ChatAction[] }
+interface ChatResponse { reply: string; reasoning?: string; suggestedItemIds: string[] }
 
 /* ── AI Chatbot — AI Gateway (OpenAI-compatible) ── */
 const AI_GATEWAY_URL = 'https://ai-gateway.guidesify.com/v1/chat/completions'
@@ -185,79 +139,34 @@ const AI_GATEWAY_KEY = import.meta.env.VITE_AI_KEY || ''
 
 async function sendChat(message: string, items: Item[], rooms: Room[], history: Array<{ role: string; content: string }>): Promise<ChatResponse> {
   if (!AI_GATEWAY_KEY) {
-    return { reply: 'AI key not configured. Add VITE_AI_KEY to your .env file to enable the assistant.', suggestedItemIds: [], actions: [] }
+    return { reply: 'AI key not configured. Add VITE_AI_KEY to your .env file to enable the assistant.', suggestedItemIds: [] }
   }
 
-  /* Build rich inventory context grouped by room with stats */
+  /* Build inventory context for the prompt */
   const roomMap = new Map(rooms.map(r => [r.id, r]))
-  const groupedByRoom = new Map<string, Item[]>()
-  items.forEach(item => { const list = groupedByRoom.get(item.roomId) || []; list.push(item); groupedByRoom.set(item.roomId, list) })
-
-  const now = Date.now()
-  const staleThreshold = 3 * 24 * 60 * 60 * 1000 // 3 days
-  const staleCount = items.filter(i => new Date(i.lastConfirmed).getTime() < now - staleThreshold).length
-  const unsortedCount = items.filter(i => i.zoneX === -50 && i.zoneY === -50).length
-
-  const inventoryLines: string[] = []
-  groupedByRoom.forEach((roomItems, roomId) => {
-    const room = roomMap.get(roomId)
-    const zones = room?.zones.map(z => `${z.id}="${z.label}"`).join(', ') || 'none'
-    inventoryLines.push(`## ${room?.name ?? 'Unknown'} [room:${roomId}] (zones: ${zones})`)
-    roomItems.forEach(item => {
-      const lastChecked = Math.round((now - new Date(item.lastConfirmed).getTime()) / (24 * 60 * 60 * 1000))
-      const stale = lastChecked > 3 ? ` ⚠️ last checked ${lastChecked}d ago` : ''
-      const unsorted = item.zoneX === -50 && item.zoneY === -50 ? ' [unsorted]' : ''
-      inventoryLines.push(`- ${item.name} (${item.category}) — ${item.location}${unsorted}${stale} [id:${item.id}]`)
-    })
+  const inventoryLines = items.map(item => {
+    const room = roomMap.get(item.roomId)
+    return `- ${item.name} (${item.category}) — ${item.location}, in ${room?.name ?? 'Unknown'} [id:${item.id}]`
   })
 
-  const statsLine = `Stats: ${items.length} total items across ${rooms.length} rooms, ${unsortedCount} unsorted, ${staleCount} unchecked in 3+ days.`
-
-  const inventoryContext = items.length > 0
-    ? `\n\nUSER'S INVENTORY (${items.length} items in ${rooms.length} rooms):\n${statsLine}\n\n${inventoryLines.join('\n')}`
+  const inventoryContext = inventoryLines.length > 0
+    ? `\n\nUSER'S TRACKED INVENTORY:\n${inventoryLines.join('\n')}`
     : '\n\nUser has no tracked items yet.'
 
-  const systemPrompt = `You are a home-organizer assistant. Help users manage, find, and organize their belongings.
-
-CAPABILITIES:
-- Find items by name, category, room, or partial match.
-- Summarize what's in each room or category.
-- Identify stale/unchecked items that need attention.
-- Suggest where unsorted items should be stored based on their category.
-- Answer general organization questions (based on your knowledge).
-- When the user asks to move/relocate/assign an item, offer an ACTION.
+  const systemPrompt = `You are a lost-item assistant. Help users find things by searching their inventory.
 
 RULES:
-- First, think step-by-step inside <reasoning> tags (what the user wants, which items match, analysis).
+- First, think step-by-step inside <reasoning> tags (what the user wants, which items match, where they are).
 - Then provide the answer inside <answer> tags.
-- Be concise, warm, and practical (2-5 sentences).
+- Be concise and friendly in the answer (2-4 sentences max).
 - If an item is in the inventory, tell them EXACTLY where it is (room + location).
 - If not found, suggest where they might keep it based on the item category.
-- For category/room queries, list ALL matching items with locations.
-- Flag stale items (⚠️ unchecked >3 days) proactively.
+- For category queries, list ALL matching items with their locations.
 - Include item tracking IDs as [id:UUID] so the app can highlight them.
 
-ACTIONS (use sparingly, only when the user explicitly asks to move/sort/organize):
-- To offer moving an item to a room: <action type="move_room" item="ITEM_UUID" room="ROOM_ID">Move to RoomName</action>
-- To offer placing an item in a zone: <action type="assign_zone" item="ITEM_UUID" zone="ZONE_ID">Place on ZoneLabel</action>
-- To offer removing from map: <action type="unassign" item="ITEM_UUID">Remove from Map</action>
-- When the user asks to move an item to a specific spot in another room (e.g. "move keys to Bedroom, Desk"), use this combined action: <action type="move_and_assign" item="ITEM_UUID" room="ROOM_ID" zone="ZONE_ID">Move to RoomName → ZoneLabel</action>
-- Place action tags INSIDE the <answer> tag, after or between sentences.
-- Only offer actions for items that the user is currently discussing.
-- Never offer delete actions.
-- Always use the EXACT room IDs and zone IDs from the inventory context. Rooms: [room:ROOM_ID]. Zones: id="Label" pairs — copy the id directly (e.g. desk, nightstand_l, cabinet).
-
 Example output:
-<reasoning>The user is asking about their keys. Inventory shows "House Keys" in Living Room on Coffee Table.</reasoning>
-<answer>Your keys are in the **Living Room** on the Coffee Table. I'd check the bowl by the TV remote. 🔑</answer>
-
-Example with move action:
-<reasoning>User wants the water bottle moved to Bedroom. "Water Bottle" [id:abc123] is currently in Living Room. Bedroom ID is room-bedroom.</reasoning>
-<answer>Got it! Your Water Bottle is currently in the Living Room. I can move it to the Bedroom for you: <action type="move_room" item="abc123" room="room-bedroom">Move to Bedroom</action></answer>
-
-Example with combined move-and-place (when user specifies both room AND spot):
-<reasoning>User wants keys moved to Bedroom, Nightstand. "House Keys" [id:xyz789] is in Living Room. Bedroom is [room:room-bedroom] with zones nightstand_l="Nightstand L".</reasoning>
-<answer>Sure! Here's a one-click move for your keys: <action type="move_and_assign" item="xyz789" room="room-bedroom" zone="nightstand_l">Move to Bedroom → Nightstand L</action></answer>${inventoryContext}`
+<reasoning>The user is asking about their keys. Looking at the inventory, I see "House Keys" in the Living Room on the Coffee Table.</reasoning>
+<answer>Your keys are in the **Living Room** on the Coffee Table. I'd check the bowl by the TV remote. 🔑</answer>${inventoryContext}`
 
   const messages = [
     { role: 'system', content: systemPrompt },
@@ -269,65 +178,31 @@ Example with combined move-and-place (when user specifies both room AND spot):
     const res = await fetch(AI_GATEWAY_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${AI_GATEWAY_KEY}` },
-      body: JSON.stringify({ model: 'free-last-resort', messages, max_tokens: 1500, temperature: 0.5 }),
+      body: JSON.stringify({ model: 'free-last-resort', messages, max_tokens: 800, temperature: 0.7 }),
     })
     if (!res.ok) {
-      return { reply: 'AI assistant unavailable right now. Please try again.', suggestedItemIds: [], actions: [] }
+      return { reply: 'AI assistant unavailable right now. Please try again.', suggestedItemIds: [] }
     }
     const data = await res.json()
     const rawContent = data.choices?.[0]?.message?.content?.trim() || ''
-    if (!rawContent) return { reply: 'AI returned an empty response. Please try again.', suggestedItemIds: [], actions: [] }
-
-    /* ── Pure helpers (mirrored in test-parser.js) ── */
-    /* Tolerant <answer> extraction: inner text if </answer> exists, else everything after <answer>, else raw */
-    const extractAnswer = (raw: string): string => {
-      const start = raw.indexOf('<answer>')
-      const end = raw.indexOf('</answer>')
-      if (start === -1) return raw.trim()
-      const inner = start + '<answer>'.length
-      return (end !== -1 && end > inner ? raw.slice(inner, end) : raw.slice(inner)).trim()
-    }
-
-    /* Sanitize: strip ALL leftover markup (complete or truncated/unclosed fragments) so raw XML never shows */
-    const sanitizeChatText = (text: string): string =>
-      text
-        .replace(/<reasoning>[\s\S]*?(?:<\/reasoning>|$)/g, '')  /* reasoning blocks (incl. truncated) */
-        .replace(/<\/reasoning>/g, '')                           /* stray reasoning close tags */
-        .replace(/<\/?answer>/g, '')                             /* stray answer tags */
-        .replace(/<action[\s\S]*?(?:<\/action>|$)/g, '')        /* action tags + truncated/unclosed fragments */
-        .replace(/<\/action>/g, '')                              /* stray action close tags */
-        .replace(/\[id:[^\]]+\]/g, '')                           /* id highlight tags */
-        .replace(/\s{2,}/g, ' ')
-        .trim()
-
-    /* Only well-formed complete <action ...>...</action> tags produce actions */
-    const parseActions = (text: string): ChatAction[] => {
-      const actionRegex = /<action\s+type="(\w+)"\s+item="([^"]+)"(?:\s+room="([^"]*)")?(?:\s+zone="([^"]*)")?\s*>([\s\S]*?)<\/action>/g
-      const result: ChatAction[] = []
-      let am
-      while ((am = actionRegex.exec(text)) !== null) {
-        result.push({ type: am[1] as ChatAction['type'], itemId: am[2], roomId: am[3] || undefined, zoneId: am[4] || undefined, label: am[5].trim() })
-      }
-      return result
-    }
+    if (!rawContent) return { reply: 'AI returned an empty response. Please try again.', suggestedItemIds: [] }
 
     /* Parse <reasoning> and <answer> tags */
     const reasoningMatch = rawContent.match(/<reasoning>([\s\S]*?)<\/reasoning>/)
+    const answerMatch = rawContent.match(/<answer>([\s\S]*?)<\/answer>/)
     const reasoning = reasoningMatch ? reasoningMatch[1].trim() : undefined
-    const answer = extractAnswer(rawContent)
+    const answer = answerMatch ? answerMatch[1].trim() : rawContent.replace(/<reasonation>[\s\S]*?<\/reasonation>/g, '').replace(/<reasoning>[\s\S]*?<\/reasoning>/g, '').trim()
 
     /* Extract [id:...] tags for item highlighting */
     const idRegex = /\[id:([^\]]+)\]/g
     const suggestedItemIds: string[] = []
     let m
     while ((m = idRegex.exec(answer)) !== null) suggestedItemIds.push(m[1])
+    const cleanReply = answer.replace(/\[id:[^\]]+\]/g, '').trim()
 
-    const actions = parseActions(answer)
-    const cleanReply = sanitizeChatText(answer)
-
-    return { reply: cleanReply || 'I found some information for you.', reasoning, suggestedItemIds, actions }
+    return { reply: cleanReply || 'I found some information for you.', reasoning, suggestedItemIds }
   } catch {
-    return { reply: 'Sorry, could not reach the AI service. Please try again.', suggestedItemIds: [], actions: [] }
+    return { reply: 'Sorry, could not reach the AI service. Please try again.', suggestedItemIds: [] }
   }
 }
 
@@ -432,206 +307,6 @@ function categoryIcon(cat: string) {
   }
 }
 
-/* ── Room Map Panel ── */
-
-function RoomMapPanel({
-  room, rooms, currentRoomId, roomItems, selectedZone, glowingItemId, glowingZoneId, isEditingMap, onClose,
-  onToggleEdit, onZoneMove, onSelectZone, onPinClick, onAddFurniture, onDeleteZone, onAssignItem, onUnassignItem, onMoveToRoom,
-}: {
-  room: Room; rooms: Room[]; currentRoomId: string; roomItems: Item[]; selectedZone: string | null; glowingItemId: string | null; glowingZoneId: string | null;
-  isEditingMap: boolean; onClose?: () => void;
-  onToggleEdit: () => void;
-  onZoneMove: (roomId: string, zoneId: string, x: number, y: number) => void;
-  onSelectZone: (id: string | null) => void;
-  onPinClick: (itemId: string) => void;
-  onAddFurniture: (roomId: string) => void;
-  onDeleteZone: (roomId: string, zoneId: string) => void;
-  onAssignItem: (itemId: string, zoneId: string) => void;
-  onUnassignItem: (itemId: string) => void;
-  onMoveToRoom: (itemId: string, roomId: string) => void;
-}) {
-  const dragStateRef = useRef<{ roomId: string; zoneId: string } | null>(null)
-  const [dropZoneId, setDropZoneId] = useState<string | null>(null)
-  const [assignItemId, setAssignItemId] = useState<string | null>(null)
-  const itemDragRef = useRef<{ itemId: string; ghost: HTMLElement } | null>(null)
-
-  /* ── Drag zones ── */
-  function startDrag(zoneEl: HTMLElement) {
-    if (zoneEl.closest('.map-pin, .zone-delete')) return
-    const roomId = zoneEl.dataset.roomId; const zoneId = zoneEl.dataset.zone
-    if (!roomId || !zoneId) return
-    dragStateRef.current = { roomId, zoneId }
-    zoneEl.classList.add('dragging')
-    const border = zoneEl.closest('.room-border') as HTMLElement
-    if (!border) return
-    const rect = border.getBoundingClientRect()
-
-    function onMove(cx: number, cy: number) {
-      if (!dragStateRef.current) return
-      const px = ((cx - rect.left) / rect.width) * 100; const py = ((cy - rect.top) / rect.height) * 100
-      const x = Math.max(0, Math.min(100, Math.round(px * 10) / 10)); const y = Math.max(0, Math.min(100, Math.round(py * 10) / 10))
-      onZoneMove(dragStateRef.current.roomId, dragStateRef.current.zoneId, x, y)
-      const el = document.querySelector<HTMLElement>(`.drag-zone[data-zone="${zoneId}"][data-room-id="${roomId}"]`)
-      if (el) { el.style.left = `${x}%`; el.style.top = `${y}%` }
-    }
-    function onUp() {
-      dragStateRef.current = null; document.querySelectorAll('.drag-zone.dragging').forEach(el => el.classList.remove('dragging'))
-      document.removeEventListener('mousemove', onMouseMove); document.removeEventListener('mouseup', onMouseUp)
-      document.removeEventListener('touchmove', onTouchMove); document.removeEventListener('touchend', onTouchEnd)
-    }
-    function onMouseMove(ev: MouseEvent) { onMove(ev.clientX, ev.clientY) }
-    function onMouseUp() { onUp() }
-    function onTouchMove(ev: TouchEvent) { if (ev.touches[0]) onMove(ev.touches[0].clientX, ev.touches[0].clientY) }
-    function onTouchEnd() { onUp() }
-    document.addEventListener('mousemove', onMouseMove); document.addEventListener('mouseup', onMouseUp)
-    document.addEventListener('touchmove', onTouchMove, { passive: true }); document.addEventListener('touchend', onTouchEnd)
-  }
-
-  /* ── Touch-drag pins → unsorted tray (unassign) ── */
-  function startPinTouchDrag(ev: React.TouchEvent, itemId: string) {
-    const touch = ev.touches[0]; if (!touch) return
-    const pinEl = ev.currentTarget as HTMLElement
-    const ghost = pinEl.cloneNode(true) as HTMLElement
-    ghost.style.cssText = 'position:fixed;z-index:100;pointer-events:none;opacity:0.85;transform:scale(1.15);left:' + touch.clientX + 'px;top:' + touch.clientY + 'px;margin:-14px 0 0 -14px;'
-    document.body.appendChild(ghost)
-    itemDragRef.current = { itemId, ghost }
-    const onMove = (ev2: TouchEvent) => { const t = ev2.touches[0]; if (t && itemDragRef.current) itemDragRef.current.ghost.style.left = t.clientX + 'px'; if (t && itemDragRef.current) itemDragRef.current.ghost.style.top = t.clientY + 'px' }
-    const onEnd = () => {
-      const tray = document.querySelector('[data-unsorted-tray]')
-      if (tray && itemDragRef.current) {
-        const r = tray.getBoundingClientRect()
-        const ghost = itemDragRef.current.ghost
-        const gx = parseFloat(ghost.style.left); const gy = parseFloat(ghost.style.top)
-        if (gx >= r.left && gx <= r.right && gy >= r.top && gy <= r.bottom) onUnassignItem(itemDragRef.current.itemId)
-      }
-      if (itemDragRef.current) { itemDragRef.current.ghost.remove(); itemDragRef.current = null }
-      document.removeEventListener('touchmove', onMove); document.removeEventListener('touchend', onEnd); document.removeEventListener('touchcancel', onEnd)
-    }
-    document.addEventListener('touchmove', onMove, { passive: true }); document.addEventListener('touchend', onEnd); document.addEventListener('touchcancel', onEnd)
-  }
-
-  return (
-    <>
-    <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-sm overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-3.5 border-b border-gray-200 dark:border-gray-700">
-        <h3 className="text-sm font-semibold">🗺️ {room.name}</h3>
-        <div className="flex items-center gap-2">
-          {selectedZone && (
-            <button type="button" onClick={() => onSelectZone(null)} className="px-2.5 py-1 text-xs font-medium border border-gray-200 dark:border-gray-600 rounded-md cursor-pointer bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors touch-manipulation">Clear Filter</button>
-          )}
-          <button type="button" onClick={onToggleEdit}
-            className={`px-2.5 py-1 text-xs font-medium border rounded-md cursor-pointer transition-colors touch-manipulation ${
-              isEditingMap ? 'bg-indigo-500 text-white border-indigo-500 hover:bg-indigo-600' : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700'
-            }`}>
-            {isEditingMap ? '✅ Done' : '✏️ Edit Map'}
-          </button>
-          {onClose && (
-            <button aria-label="Close map" onClick={onClose} className="bg-none border-none text-lg cursor-pointer text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 p-1 rounded transition-colors touch-manipulation">✕</button>
-          )}
-        </div>
-      </div>
-      <div className="p-4">
-        <div className="relative w-full aspect-[4/3] bg-gray-50 dark:bg-gray-900 border-2 border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden room-border">
-          <div className="absolute inset-0 flex items-center justify-center text-xs text-gray-400 dark:text-gray-600 font-medium pointer-events-none whitespace-nowrap select-none">Drag zones to rearrange</div>
-          {room.zones.map(zone => {
-            const zoned = roomItems.filter(i => Math.abs(i.zoneX - zone.x) < 15 && Math.abs(i.zoneY - zone.y) < 15)
-            const hasGlowing = zoned.some(i => i.id === glowingItemId)
-            const zoneCats = [...new Set(zoned.map(i => i.category))]
-            const zoneColor = zoneCats.length === 1 ? pinColor(zoneCats[0]) : null
-            return (
-              <div key={zone.id}
-                className={`drag-zone absolute -translate-x-1/2 -translate-y-1/2 px-2.5 py-1.5 rounded-lg cursor-pointer transition-all select-none min-w-[60px] ${
-                  selectedZone === zone.id ? 'bg-indigo-500/20 border-indigo-500' : 'bg-indigo-500/10 border-indigo-500/30'
-                } ${glowingZoneId === zone.id ? '!border-emerald-400 !shadow-[0_0_15px_rgba(16,185,129,0.5),0_0_30px_rgba(16,185,129,0.2)] !bg-emerald-500/20 !z-10' : ''} ${hasGlowing ? '!border-indigo-500 !shadow-[0_0_0_3px_rgba(99,102,241,0.2),0_0_20px_rgba(99,102,241,0.15)] animate-pulse' : ''} ${isEditingMap ? 'ring-2 ring-indigo-400/60' : ''} ${dropZoneId === zone.id ? 'ring-2 ring-emerald-400 bg-emerald-500/10 !z-10' : ''}`}
-                data-zone={zone.id} data-room-id={room.id}
-                style={{ left: `${zone.x}%`, top: `${zone.y}%`, border: '1px dashed', touchAction: 'none', ...(zoneColor ? { borderColor: zoneColor, background: `${zoneColor}15` } : {}) }}
-                onMouseDown={e => { if (!(e.target as HTMLElement).closest('.map-pin, .zone-delete')) startDrag(e.currentTarget) }}
-                onTouchStart={e => { if (!(e.target as HTMLElement).closest('.map-pin, .zone-delete')) startDrag(e.currentTarget) }}
-                onClick={e => { e.stopPropagation(); if (!(e.target as HTMLElement).closest('.map-pin, .zone-delete')) onSelectZone(selectedZone === zone.id ? null : zone.id) }}
-                onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDropZoneId(zone.id) }}
-                onDrop={e => { e.preventDefault(); const id = e.dataTransfer.getData('text/plain'); if (id) onAssignItem(id, zone.id); setDropZoneId(null) }}
-                onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropZoneId(null) }}>
-                {isEditingMap ? (
-                  <span className="inline-flex items-center justify-center w-11 h-11 -m-3 text-xs text-gray-500 dark:text-gray-400 cursor-grab active:cursor-grabbing select-none">⠿</span>
-                ) : (
-                  <span className="block text-center text-xs text-gray-500 dark:text-gray-400 opacity-40 cursor-grab select-none mb-0.5">⠿</span>
-                )}
-                <span className="block text-[11px] text-gray-500 dark:text-gray-400 font-semibold text-center pointer-events-none select-none">{zone.label}</span>
-                {zoned.length > 0 && (
-                  <span className="absolute -top-1.5 -right-1.5 w-4.5 h-4.5 rounded-full bg-indigo-500 text-white text-[10px] font-bold flex items-center justify-center pointer-events-none select-none">{zoned.length}</span>
-                )}
-                {isEditingMap && (
-                  <button type="button" aria-label={`Delete zone ${zone.label}`} className="zone-delete absolute -top-2 -right-2 w-11 h-11 flex items-center justify-center rounded-full bg-white dark:bg-gray-700 border border-red-300 dark:border-red-900 text-red-500 text-sm shadow-md cursor-pointer z-10" onClick={(e) => { e.stopPropagation(); if (confirm(`Delete "${zone.label}"? Items near it will become unsorted.`)) onDeleteZone(room.id, zone.id) }}>🗑️</button>
-                )}
-                {zoned.map(i => (
-                  <div key={i.id}
-                    className={`map-pin absolute -translate-x-1/2 -translate-y-1/2 w-7 h-7 rounded-full flex items-center justify-center text-sm cursor-pointer shadow-md z-2 transition-all hover:scale-120 ${
-                      glowingItemId === i.id ? '!z-6 animate-pulse-glow' : ''
-                    }`}
-                    data-item-id={i.id} data-pin-for={i.id}
-                    style={{ background: pinColor(i.category), touchAction: 'none' }}
-                    draggable="true"
-                    onDragStart={e => { e.stopPropagation(); e.dataTransfer.setData('text/plain', i.id); e.dataTransfer.effectAllowed = 'move' }}
-                    onTouchStart={e => { e.stopPropagation(); startPinTouchDrag(e, i.id) }}
-                    onClick={e => { e.stopPropagation(); onPinClick(i.id) }}>
-                    {pinIcon(i.name)}
-                  </div>
-                ))}
-              </div>
-            )
-          })}
-          {isEditingMap && (
-            <button type="button" onClick={() => onAddFurniture(room.id)} className="absolute bottom-2 right-2 z-20 px-4 py-2.5 min-h-[44px] bg-indigo-500 hover:bg-indigo-600 text-white text-xs font-bold rounded-lg shadow-md cursor-pointer touch-manipulation">+ Add Furniture</button>
-          )}
-        </div>
-        {/* Unsorted bar */}
-        {(() => {
-          const unsorted = roomItems.filter(i => !room.zones.some(z => Math.abs(i.zoneX - z.x) < 15 && Math.abs(i.zoneY - z.y) < 15))
-          if (unsorted.length === 0) return null
-          return (
-            <div data-unsorted-tray className="flex items-center gap-2 p-2.5 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 flex-wrap"
-              onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move' }}
-              onDrop={e => { e.preventDefault(); const id = e.dataTransfer.getData('text/plain'); if (id) onUnassignItem(id) }}>
-              <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 whitespace-nowrap">📦 Unsorted / Off-Map Items</span>
-              {unsorted.map(i => (
-                <span key={i.id} data-tray-pill={i.id} draggable="true"
-                  onDragStart={e => { e.dataTransfer.setData('text/plain', i.id); e.dataTransfer.effectAllowed = 'move' }}
-                  onDragEnd={() => setDropZoneId(null)}
-                  onClick={() => setAssignItemId(assignItemId === i.id ? null : i.id)}
-                  className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-full text-gray-700 dark:text-gray-300 whitespace-nowrap cursor-pointer hover:border-indigo-500 transition-colors ${
-                    glowingItemId === i.id ? '!border-indigo-500 !shadow-[0_0_0_2px_rgba(99,102,241,0.2)]' : ''
-                  }`}>
-                  {pinIcon(i.name)} {i.name}
-                </span>
-              ))}
-            </div>
-          )
-        })()}
-      </div>
-    </div>
-    {assignItemId && (() => {
-      const rect = document.querySelector(`[data-tray-pill="${assignItemId}"]`)?.getBoundingClientRect()
-      return (
-        <>
-          <div className="fixed inset-0 z-[70]" onClick={() => setAssignItemId(null)} />
-          <div style={{ position: 'fixed', top: (rect?.bottom ?? 0) + 4, left: Math.min(rect?.left ?? 0, window.innerWidth - 160) }} className="z-[80] bg-white dark:bg-gray-800 border rounded-lg shadow-xl p-2 w-40">
-            <div className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 px-3 py-1">Assign to:</div>
-            {room.zones.map(z => (
-              <button key={z.id} type="button" onClick={() => { onAssignItem(assignItemId, z.id); setAssignItemId(null) }} className="block w-full text-left px-3 py-2 text-xs hover:bg-indigo-50 dark:hover:bg-gray-700 rounded-md">{z.label}</button>
-            ))}
-            <div className="border-t my-1" />
-            <div className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 px-3 py-1">Move to Room:</div>
-            {rooms.filter(r => r.id !== currentRoomId).map(r => (
-              <button key={r.id} type="button" onClick={() => { onMoveToRoom(assignItemId, r.id); setAssignItemId(null) }} className="block w-full text-left px-3 py-2 text-xs hover:bg-emerald-50 dark:hover:bg-emerald-900/30 rounded-md">🏠 {r.name}</button>
-            ))}
-          </div>
-        </>
-      )
-    })()}
-    </>
-  )
-}
-
 /* ── React App ── */
 
 export default function App() {
@@ -652,7 +327,6 @@ export default function App() {
   const [selectedZone, setSelectedZone] = useState<string | null>(null)
   const [glowingItemId, setGlowingItemId] = useState<string | null>(null)
   const [glowingZoneId, setGlowingZoneId] = useState<string | null>(null)
-  const [isEditingMap, setIsEditingMap] = useState(false)
   const [glowingRoomIds, setGlowingRoomIds] = useState<string[]>([])
   const [showAddModal, setShowAddModal] = useState(false)
   const [editingItem, setEditingItem] = useState<Item | null>(null)
@@ -662,20 +336,13 @@ export default function App() {
   const [scanResult, setScanResult] = useState<{ name: string; category: string; description: string; confidence?: string; features?: string[] } | null>(null)
   const [scannedItems, setScannedItems] = useState<ScannedItem[]>([])
   const [showScannedGallery, setShowScannedGallery] = useState(false)
-  const [photosFromServer, setPhotosFromServer] = useState<Record<string, any[]> | null>(null)
-  const [photosLoading, setPhotosLoading] = useState(false)
-  const [assigningPhoto, setAssigningPhoto] = useState<{ id: string; r2Key?: string; imageData?: string } | null>(null)
-  const [pickForItem, setPickForItem] = useState<Item | null>(null)
-  const [pickSearch, setPickSearch] = useState('')
   const [showConfetti, setShowConfetti] = useState(false)
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [onboardingStep, setOnboardingStep] = useState<1 | 2>(1)
   const [showMobileMap, setShowMobileMap] = useState(false)
   const [showChat, setShowChat] = useState(false)
-  const [chatMessages, setChatMessages] = useState<Array<{role:'user'|'assistant';content:string;reasoning?:string;suggestedIds:string[];actions?:ChatAction[]}>>([])
+  const [chatMessages, setChatMessages] = useState<Array<{role:'user'|'assistant';content:string;reasoning?:string;suggestedIds:string[]}>>([])
   const [chatLoading, setChatLoading] = useState(false)
-  const [doneActions, setDoneActions] = useState<string[]>([])
-  const [failedActions, setFailedActions] = useState<string[]>([])
   const [chatInput, setChatInput] = useState('')
   const chatEndRef = useRef<HTMLDivElement>(null)
   const chatInputRef = useRef<HTMLInputElement>(null)
@@ -710,6 +377,7 @@ export default function App() {
   const pulseTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const scanVideoRef = useRef<HTMLVideoElement | null>(null)
   const scanStreamRef = useRef<MediaStream | null>(null)
+  const dragState = useRef<{ roomId: string; zoneId: string } | null>(null)
 
   const room = rooms.find(r => r.id === currentRoomId) || rooms[0]
   const roomItems = items.filter(i => i.roomId === currentRoomId)
@@ -744,23 +412,6 @@ export default function App() {
 
   useEffect(() => { if (user) save() }, [rooms, items, currentRoomId, scannedItems])
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [chatMessages])
-  useEffect(() => {
-    if (showScannedGallery) {
-      setPhotosLoading(true)
-      fetchPhotos(userRef.current).then(data => {
-        setPhotosFromServer(data.categories)
-        setPhotosLoading(false)
-      })
-      syncHistory()
-    }
-  }, [showScannedGallery])
-
-  useEffect(() => {
-    if (pickForItem) {
-      fetchPhotos(userRef.current).then(data => setPhotosFromServer(data.categories)).catch(() => {})
-      syncHistory()
-    }
-  }, [pickForItem])
 
   function loadData(u: User) {
     const raw = localStorage.getItem(storageKey(u.email))
@@ -831,23 +482,6 @@ export default function App() {
     setAuthError(''); setPage('dashboard')
   }
 
-  function forgotPassword() {
-    const email = window.prompt('Enter your account email:', authEmail || '')
-    if (email === null || !email.trim()) return
-    const users = getUsers()
-    const u = users.find(us => us.email === email.trim())
-    if (!u) { setAuthError('No account found for that email'); return }
-    const newPw = window.prompt('Enter your new password (at least 4 characters):')
-    if (newPw === null) return
-    if (newPw.length < 4) { setAuthError('Password must be at least 4 characters'); return }
-    const confirm = window.prompt('Confirm your new password:')
-    if (confirm !== newPw) { setAuthError('Passwords do not match'); return }
-    u.password = hashPass(newPw)
-    saveUsers(users)
-    setAuthError('Password reset! Sign in with your new password.')
-    setAuthPassword('')
-  }
-
   function signOut() {
     stopScanCamera()
     setUser(null); setItems([]); setRooms([]); setScannedItems([]); setAuthError(''); setShowOnboarding(false); setPage('auth')
@@ -866,38 +500,15 @@ export default function App() {
     setCurrentRoomId(id); setSelectedZone(null)
   }
 
-  function addZone(roomId: string, label: string) {
-    setRooms(prev => prev.map(r => r.id === roomId ? { ...r, zones: [...r.zones, { id: crypto.randomUUID(), label, x: 50, y: 40 }] } : r))
-  }
-
-  function deleteZone(roomId: string, zoneId: string) {
-    setRooms(prev => prev.map(r => r.id === roomId ? { ...r, zones: r.zones.filter(z => z.id !== zoneId) } : r))
-  }
-
-  function assignItemToZone(itemId: string, zoneId: string, roomId?: string) {
-    const room = rooms.find(r => r.id === (roomId || currentRoomId))
-    const zone = room?.zones.find(z => z.id === zoneId)
-    if (!zone) return
-    setItems(prev => prev.map(i => i.id === itemId ? { ...i, zoneX: zone.x, zoneY: zone.y, location: zone.label, lastConfirmed: new Date().toISOString() } : i))
-  }
-  function unassignItem(itemId: string) {
-    setItems(prev => prev.map(i => i.id === itemId ? { ...i, zoneX: -50, zoneY: -50, location: 'Unsorted', lastConfirmed: new Date().toISOString() } : i))
-  }
-
-  function moveItemToRoom(itemId: string, newRoomId: string) {
-    if (!rooms.find(r => r.id === newRoomId)) { console.error('moveItemToRoom: invalid room', newRoomId); return }
-    setItems(prev => prev.map(i => i.id === itemId ? { ...i, roomId: newRoomId, zoneX: -50, zoneY: -50, location: 'Unsorted', lastConfirmed: new Date().toISOString() } : i))
-  }
-
-  function addItem(name: string, location: string, category: string, zoneX = 50, zoneY = 50, imageKey?: string) {
+  function addItem(name: string, location: string, category: string, zoneX = 50, zoneY = 50) {
     setItems(prev => [...prev, {
       id: crypto.randomUUID(), name, location, category, roomId: currentRoomId,
-      createdAt: formatDate(new Date()), lastConfirmed: new Date().toISOString(), zoneX, zoneY, imageKey,
+      createdAt: formatDate(new Date()), lastConfirmed: new Date().toISOString(), zoneX, zoneY,
     }])
   }
 
-  function updateItem(id: string, name: string, location: string, category: string, zoneX?: number, zoneY?: number) {
-    setItems(prev => prev.map(i => i.id === id ? { ...i, name, location, category, ...(zoneX !== undefined ? { zoneX, zoneY } : {}), lastConfirmed: new Date().toISOString() } : i))
+  function updateItem(id: string, name: string, location: string, category: string) {
+    setItems(prev => prev.map(i => i.id === id ? { ...i, name, location, category, lastConfirmed: new Date().toISOString() } : i))
   }
 
   function deleteItem(id: string) { setItems(prev => prev.filter(i => i.id !== id)) }
@@ -1004,24 +615,12 @@ export default function App() {
 
   function openScanCamera() {
     setScanMode('camera'); setCapturedImage(null); setScanResult(null)
-    /* Try rear camera first, fallback to any camera */
-    const tryCam = (constraints?: MediaStreamConstraints) =>
-      navigator.mediaDevices.getUserMedia(constraints || { video: true, audio: false })
-    tryCam({ video: { facingMode: 'environment' }, audio: false })
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
       .then(stream => {
         scanStreamRef.current = stream
         if (scanVideoRef.current) { scanVideoRef.current.srcObject = stream; scanVideoRef.current.play() }
       })
-      .catch(() => {
-        /* Fallback: try any camera without facingMode */
-        tryCam().then(stream => {
-          scanStreamRef.current = stream
-          if (scanVideoRef.current) { scanVideoRef.current.srcObject = stream; scanVideoRef.current.play() }
-        }).catch(err => {
-          setScanMode('idle')
-          alert('Camera unavailable: ' + err.message)
-        })
-      })
+      .catch(() => { setScanMode('idle'); alert('Camera access denied') })
   }
 
   function stopScanCamera() {
@@ -1061,7 +660,7 @@ export default function App() {
           }
         })
       } else {
-        setScanResult({ name: '', category: 'Other', description: '⚠️ Scan failed — AI service unavailable. Enter details below', confidence: 'low', features: [] })
+        setScanResult({ name: '', category: 'Other', description: 'Could not identify — enter details below', confidence: 'low', features: [] })
         setScanMode('result')
       }
     })
@@ -1069,30 +668,15 @@ export default function App() {
 
   function saveScannedItem(name: string, category: string) {
     if (!capturedImage) return
-    const newItemId = crypto.randomUUID()
-    const mainItemId = crypto.randomUUID()
-    /* Fire-and-forget R2 upload — never blocks camera close */
-    uploadPhoto(capturedImage, userRef.current, name || 'Unknown Item', category, 'Scanned').then(upload => {
-      if (upload) {
-        setScannedItems(prev => prev.map(p => p.id === newItemId ? { ...p, imageUrl: `${AI_SCAN_URL}/api/photos/${upload.r2Key}`, imageData: undefined } : p))
-        setItems(prev => prev.map(p => p.id === mainItemId ? { ...p, imageKey: upload.r2Key } : p))
-      }
-    }).catch(() => {})
-
     const newItem: ScannedItem = {
-      id: newItemId, name: name || 'Unknown Item', category, location: 'Unsorted',
-      imageData: capturedImage, // base64 fallback until R2 completes
-      roomId: currentRoomId, zoneX: -50, zoneY: -50,
+      id: crypto.randomUUID(), name: name || 'Unknown Item', category, location: 'Scanned',
+      imageData: capturedImage, roomId: currentRoomId, zoneX: 50, zoneY: 50,
       createdAt: formatDate(new Date()), lastConfirmed: new Date().toISOString(),
       aiDetected: !!scanResult?.name,
     }
     setScannedItems(prev => [newItem, ...prev])
-    // Add to main items with known ID (imageKey patched later on R2 completion)
-    setItems(prev => [...prev, {
-      id: mainItemId, name: name || 'Unknown Item', location: 'Unsorted', category,
-      roomId: currentRoomId, createdAt: formatDate(new Date()),
-      lastConfirmed: new Date().toISOString(), zoneX: -50, zoneY: -50,
-    }])
+    // Also add to main items
+    addItem(name || 'Unknown Item', 'Scanned', category)
     setShowConfetti(true); setTimeout(() => setShowConfetti(false), 1500)
     closeScanner()
   }
@@ -1102,49 +686,8 @@ export default function App() {
   }
 
   function addScannedToMain(item: ScannedItem) {
-    /* Extract r2Key from imageUrl if present */
-    let r2Key: string | undefined
-    if (item.imageUrl) {
-      const parts = item.imageUrl.split('/api/photos/')
-      if (parts.length === 2) r2Key = parts[1]
-    }
-    addItem(item.name, item.location, item.category, item.zoneX, item.zoneY, r2Key)
+    addItem(item.name, item.location, item.category, item.zoneX, item.zoneY)
     setShowConfetti(true); setTimeout(() => setShowConfetti(false), 1500)
-  }
-
-  function assignPhotoToItem(photoId: string, r2Key: string | undefined, imageData: string | undefined, targetItemId: string) {
-    if (r2Key) {
-      /* Already has R2 key — assign directly */
-      setItems(prev => prev.map(i => i.id === targetItemId ? { ...i, imageKey: r2Key } : i))
-      setScannedItems(prev => prev.map(s => s.id === photoId ? { ...s, imageUrl: `${AI_SCAN_URL}/api/photos/${r2Key}`, imageData: undefined } : s))
-    } else if (imageData) {
-      /* Legacy base64 — upload to R2 first, then assign */
-      uploadPhoto(imageData, userRef.current, 'Assigned Photo', 'Other', 'Scanned').then(upload => {
-        if (upload) {
-          setItems(prev => prev.map(i => i.id === targetItemId ? { ...i, imageKey: upload.r2Key } : i))
-          setScannedItems(prev => prev.map(s => s.id === photoId ? { ...s, imageUrl: `${AI_SCAN_URL}/api/photos/${upload.r2Key}`, imageData: undefined } : s))
-        }
-      })
-    }
-    setAssigningPhoto(null)
-  }
-
-  function attachPhotoToItem(itemId: string, r2Key?: string, imageData?: string) {
-    if (r2Key) {
-      /* Already has R2 key — assign directly */
-      setItems(prev => prev.map(i => i.id === itemId ? { ...i, imageKey: r2Key } : i))
-    } else if (imageData) {
-      /* Legacy base64 — upload to R2 first, then assign */
-      uploadPhoto(imageData, userRef.current, 'Assigned Photo', 'Other', 'Scanned').then(upload => {
-        if (upload) setItems(prev => prev.map(i => i.id === itemId ? { ...i, imageKey: upload.r2Key } : i))
-      })
-    }
-    setPickForItem(null)
-  }
-
-  function removeItemPhoto(itemId: string) {
-    setItems(prev => prev.map(i => i.id === itemId ? { ...i, imageKey: undefined } : i))
-    setPickForItem(null)
   }
 
   function closeScanner() {
@@ -1156,89 +699,25 @@ export default function App() {
     openScanCamera()
   }
 
-  async function syncHistory() {
-    const scans = await fetchScanHistory(userRef.current)
-    if (scans.length === 0) return
-
-    const mapped = await Promise.all(scans.map(async (s: any) => {
-      /* Lazy-migrate legacy base64 images to R2 */
-      let imageUrl = s.imageUrl as string | undefined
-      if (s.image_b64 && !imageUrl) {
-        const upload = await uploadPhoto(s.image_b64, userRef.current, s.item_name, s.suggested_category || 'Other', s.location || 'Scanned')
-        if (upload) imageUrl = `${AI_SCAN_URL}/api/photos/${upload.r2Key}`
+  function syncHistory() {
+    fetchScanHistory(userRef.current).then(scans => {
+      if (scans.length > 0) {
+        const mapped = scans.map((s: any) => ({
+          id: s.id, name: s.item_name, category: s.suggested_category || 'Other',
+          location: s.location || 'Scanned', imageData: s.image_b64,
+          roomId: currentRoomId, zoneX: 50, zoneY: 50,
+          createdAt: s.created_at, lastConfirmed: s.created_at, aiDetected: true,
+        }))
+        setScannedItems(prev => {
+          const existing = new Set(prev.map(p => p.id))
+          const fresh = mapped.filter((m: any) => !existing.has(m.id))
+          return [...fresh, ...prev]
+        })
       }
-      return {
-        id: s.id, name: s.item_name, category: s.suggested_category || 'Other',
-        location: s.location || 'Scanned',
-        imageUrl,
-        imageData: imageUrl ? undefined : (s.image_b64 as string | undefined),
-        roomId: currentRoomId, zoneX: 50, zoneY: 50,
-        createdAt: s.created_at, lastConfirmed: s.created_at, aiDetected: true,
-      } satisfies ScannedItem
-    }))
-
-    setScannedItems(prev => {
-      const existing = new Set(prev.map(p => p.id))
-      const fresh = mapped.filter((m: any) => !existing.has(m.id))
-      return [...fresh, ...prev]
     })
   }
 
   /* ── Chatbot ── */
-  function executeAction(action: ChatAction) {
-    let item = items.find(i => i.id === action.itemId)
-    /* Fallback: match by name when AI can't reliably copy UUIDs */
-    if (!item) item = items.find(i => i.name.toLowerCase().trim() === action.itemId.toLowerCase().trim())
-    if (!item) {
-      console.error('Chat action failed — item not found', { actionId: action.itemId, type: action.type, available: items.map(i => `${i.id}=${i.name}`) })
-      return false
-    }
-    /* Resolve room/zone IDs with name fallback (AI may hallucinate IDs) */
-    let resolvedRoomId = action.roomId
-    if (resolvedRoomId && !rooms.find(r => r.id === resolvedRoomId)) {
-      const rm = rooms.find(r => r.name.toLowerCase().trim() === resolvedRoomId.toLowerCase().trim())
-      if (rm) resolvedRoomId = rm.id
-      else { console.error('Chat action failed — room not found', { roomId: action.roomId, available: rooms.map(r => `${r.id}=${r.name}`) }); return false }
-    }
-    let resolvedZoneId = action.zoneId
-    if (resolvedZoneId) {
-      const room = rooms.find(r => r.id === currentRoomId)
-      if (room && !room.zones.find(z => z.id === resolvedZoneId)) {
-        const zn = room.zones.find(z => z.label.toLowerCase().trim() === resolvedZoneId.toLowerCase().trim())
-        if (zn) resolvedZoneId = zn.id
-        else { console.error('Chat action failed — zone not found', { zoneId: action.zoneId, available: room.zones.map(z => `${z.id}=${z.label}`) }); return false }
-      }
-    }
-    switch (action.type) {
-      case 'move_room':
-        if (resolvedRoomId) { moveItemToRoom(item.id, resolvedRoomId); return true }
-        console.error('Chat action failed — move_room missing roomId', action)
-        return false
-      case 'assign_zone':
-        if (resolvedZoneId) { assignItemToZone(item.id, resolvedZoneId); return true }
-        console.error('Chat action failed — assign_zone missing zoneId', action)
-        return false
-      case 'move_and_assign': {
-        if (!resolvedRoomId || !action.zoneId) { console.error('Chat action failed — move_and_assign missing room or zone', action); return false }
-        const targetRoom = rooms.find(r => r.id === resolvedRoomId)
-        if (!targetRoom) { console.error('Chat action failed — target room not found', { resolvedRoomId }); return false }
-        let targetZoneId = action.zoneId
-        if (!targetRoom.zones.find(z => z.id === targetZoneId)) {
-          const zn = targetRoom.zones.find(z => z.label.toLowerCase().trim() === targetZoneId.toLowerCase().trim())
-          if (zn) targetZoneId = zn.id
-          else { console.error('Chat action failed — zone not found in target room', { zoneId: action.zoneId, targetRoom: resolvedRoomId, available: targetRoom.zones.map(z => `${z.id}=${z.label}`) }); return false }
-        }
-        moveItemToRoom(item.id, resolvedRoomId)
-        assignItemToZone(item.id, targetZoneId, resolvedRoomId)
-        return true
-      }
-      case 'unassign':
-        unassignItem(item.id); return true
-      default:
-        return false
-    }
-  }
-
   function handleChatSend(e?: React.FormEvent, preset?: string) {
     e?.preventDefault()
     const msg = (preset ?? chatInput).trim()
@@ -1251,7 +730,7 @@ export default function App() {
     const history = [...chatMessages.map(m => ({ role: m.role, content: m.content })), { role: 'user' as const, content: msg }]
     sendChat(msg, items, rooms, history)
       .then(res => {
-        setChatMessages(prev => [...prev, { role: 'assistant', content: res.reply, reasoning: res.reasoning, suggestedIds: res.suggestedItemIds || [], actions: res.actions || [] }])
+        setChatMessages(prev => [...prev, { role: 'assistant', content: res.reply, reasoning: res.reasoning, suggestedIds: res.suggestedItemIds || [] }])
         /* If AI suggested items, highlight them */
         if (res.suggestedItemIds?.length > 0) {
           const firstItem = items.find(i => res.suggestedItemIds.includes(i.id))
@@ -1274,6 +753,39 @@ export default function App() {
       setPromptPlaceholder(placeholder); setShowPrompt(true)
       setPromptCallback(() => (v: string | null) => { resolve(v); setShowPrompt(false); setPromptCallback(null) })
     })
+  }
+
+  /* ── Drag zones ── */
+  function startDrag(zoneEl: HTMLElement) {
+    if (zoneEl.closest('.map-pin')) return
+    const roomId = zoneEl.dataset.roomId; const zoneId = zoneEl.dataset.zone
+    if (!roomId || !zoneId) return
+    dragState.current = { roomId, zoneId }
+    zoneEl.classList.add('dragging')
+    const border = zoneEl.closest('.room-border') as HTMLElement
+    if (!border) return
+    const rect = border.getBoundingClientRect()
+
+    function onMove(cx: number, cy: number) {
+      if (!dragState.current) return
+      const px = ((cx - rect.left) / rect.width) * 100; const py = ((cy - rect.top) / rect.height) * 100
+      setRooms(prev => prev.map(r => r.id === dragState.current!.roomId ? {
+        ...r, zones: r.zones.map(z => z.id === dragState.current!.zoneId ? { ...z, x: Math.max(0, Math.min(100, Math.round(px * 10) / 10)), y: Math.max(0, Math.min(100, Math.round(py * 10) / 10)) } : z)
+      } : r))
+      const el = document.querySelector<HTMLElement>(`.drag-zone[data-zone="${zoneId}"][data-room-id="${roomId}"]`)
+      if (el) { el.style.left = `${Math.max(0, Math.min(100, Math.round(px * 10) / 10))}%`; el.style.top = `${Math.max(0, Math.min(100, Math.round(py * 10) / 10))}%` }
+    }
+    function onUp() {
+      dragState.current = null; document.querySelectorAll('.drag-zone.dragging').forEach(el => el.classList.remove('dragging'))
+      document.removeEventListener('mousemove', onMouseMove); document.removeEventListener('mouseup', onMouseUp)
+      document.removeEventListener('touchmove', onTouchMove); document.removeEventListener('touchend', onTouchEnd)
+    }
+    function onMouseMove(ev: MouseEvent) { onMove(ev.clientX, ev.clientY) }
+    function onMouseUp() { onUp() }
+    function onTouchMove(ev: TouchEvent) { if (ev.touches[0]) onMove(ev.touches[0].clientX, ev.touches[0].clientY) }
+    function onTouchEnd() { onUp() }
+    document.addEventListener('mousemove', onMouseMove); document.addEventListener('mouseup', onMouseUp)
+    document.addEventListener('touchmove', onTouchMove, { passive: true }); document.addEventListener('touchend', onTouchEnd)
   }
 
   /* ── Cleanup on unmount ── */
@@ -1307,11 +819,6 @@ export default function App() {
               <input type="password" placeholder="Enter password" value={authPassword} onChange={e => setAuthPassword(e.target.value)}
                 className="px-4 py-3 border border-gray-200 dark:border-gray-600 rounded-lg text-sm outline-none focus:border-indigo-500 focus:ring-3 focus:ring-indigo-500/40 bg-white dark:bg-gray-700 dark:text-gray-100 transition-colors" required />
             </div>
-            {!isSignUp && (
-              <div className="flex justify-end -mt-1">
-                <button type="button" onClick={() => forgotPassword()} className="text-xs text-indigo-500 hover:opacity-80 text-right cursor-pointer">Forgot password?</button>
-              </div>
-            )}
             {authError && <p role="alert" className="text-red-500 dark:text-red-400 text-sm text-center bg-red-50 dark:bg-red-900/30 py-2 px-3 rounded-md">{authError}</p>}
             <button type="submit" className="w-full py-3 bg-indigo-500 hover:bg-indigo-600 text-white font-semibold rounded-lg transition-all hover:-translate-y-0.5 hover:shadow-md active:translate-y-0 cursor-pointer touch-manipulation">
               {isSignUp ? 'Create Account' : 'Sign In'}
@@ -1477,19 +984,9 @@ export default function App() {
                               ? 'bg-indigo-50/80 dark:bg-indigo-900/30 shadow-[inset_0_0_0_1px_rgba(99,102,241,0.3)]'
                               : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'
                           } ${isOther ? 'border-l-3 border-l-amber-400' : ''}`}>
-                          <div className="w-9 h-9 rounded-full flex-shrink-0 overflow-hidden bg-gray-100 dark:bg-gray-700">
-                            {(() => {
-                              const foundItem = items.find(it => it.id === result.itemId)
-                              return foundItem?.imageKey ? (
-                                <img src={`${AI_SCAN_URL}/api/photos/${foundItem.imageKey}`} alt={foundItem.name}
-                                  className="w-full h-full object-cover" />
-                              ) : (
-                                <div className="w-full h-full flex items-center justify-center text-sm"
-                                  style={{ background: `${pinColor(result.category)}20`, color: pinColor(result.category) }}>
-                                  {categoryIcon(result.category)}
-                                </div>
-                              )
-                            })()}
+                          <div className="w-9 h-9 rounded-full flex items-center justify-center text-sm flex-shrink-0"
+                            style={{ background: `${pinColor(result.category)}20`, color: pinColor(result.category) }}>
+                            {categoryIcon(result.category)}
                           </div>
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-1.5">
@@ -1622,21 +1119,11 @@ export default function App() {
                           glowingItemId === item.id ? '!border-indigo-500 !shadow-[0_0_0_2px_rgba(99,102,241,0.15)]' : ''
                         }`}>
                         <div className="flex items-center gap-3">
-                          {/* Category / Image thumbnail */}
-                          <button type="button" aria-label={item.imageKey ? 'Change photo' : 'Add photo'} title={item.imageKey ? 'Change photo' : 'Add photo'}
-                            onClick={() => setPickForItem(item)}
-                            className="w-10 h-10 rounded-full flex-shrink-0 overflow-hidden bg-gray-100 dark:bg-gray-700 cursor-pointer relative group">
-                            {item.imageKey ? (
-                              <img src={`${AI_SCAN_URL}/api/photos/${item.imageKey}`} alt={item.name}
-                                className="w-full h-full object-cover" />
-                            ) : (
-                              <div className="w-full h-full flex items-center justify-center text-lg"
-                                style={{ background: `${pinColor(item.category)}20`, color: pinColor(item.category) }}>
-                                {categoryIcon(item.category)}
-                              </div>
-                            )}
-                            <span className="absolute inset-0 flex items-center justify-center bg-black/50 text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity">📷</span>
-                          </button>
+                          {/* Category thumbnail */}
+                          <div className="w-10 h-10 rounded-full flex items-center justify-center text-lg flex-shrink-0"
+                            style={{ background: `${pinColor(item.category)}20`, color: pinColor(item.category) }}>
+                            {categoryIcon(item.category)}
+                          </div>
 
                           {/* Main content */}
                           <div className="flex-1 min-w-0">
@@ -1681,7 +1168,71 @@ export default function App() {
 
             {/* Map Panel */}
             <div className="sticky top-5 max-md:hidden">
-              <RoomMapPanel room={room} roomItems={roomItems} selectedZone={selectedZone} glowingItemId={glowingItemId} glowingZoneId={glowingZoneId} isEditingMap={isEditingMap} onToggleEdit={() => setIsEditingMap(v => !v)} onZoneMove={(rid, zid, x, y) => setRooms(prev => prev.map(r => r.id === rid ? { ...r, zones: r.zones.map(z => z.id === zid ? { ...z, x, y } : z) } : r))} onSelectZone={setSelectedZone} onPinClick={(id) => setGlowingItemId(glowingItemId === id ? null : id)} onAddFurniture={async (rid) => { const n = await showInlinePrompt('Furniture name (e.g. Nightstand, Pantry):'); if (n && n.trim()) addZone(rid, n.trim()) }} onDeleteZone={deleteZone} onAssignItem={assignItemToZone} onUnassignItem={unassignItem} onMoveToRoom={moveItemToRoom} rooms={rooms} currentRoomId={currentRoomId} />
+              <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-sm overflow-hidden">
+                <div className="flex items-center justify-between px-4 py-3.5 border-b border-gray-200 dark:border-gray-700">
+                  <h3 className="text-sm font-semibold">🗺️ {room.name}</h3>
+                  {selectedZone && (
+                    <button onClick={() => setSelectedZone(null)} className="px-2.5 py-1 text-xs font-medium border border-gray-200 dark:border-gray-600 rounded-md cursor-pointer bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors touch-manipulation">Clear Filter</button>
+                  )}
+                </div>
+                <div className="p-4">
+                  <div className="relative w-full aspect-[4/3] bg-gray-50 dark:bg-gray-900 border-2 border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden room-border">
+                    <div className="absolute inset-0 flex items-center justify-center text-xs text-gray-400 dark:text-gray-600 font-medium pointer-events-none whitespace-nowrap select-none">Drag zones to rearrange</div>
+                    {room.zones.map(zone => {
+                      const zoned = roomItems.filter(i => Math.abs(i.zoneX - zone.x) < 15 && Math.abs(i.zoneY - zone.y) < 15)
+                      const hasGlowing = zoned.some(i => i.id === glowingItemId)
+                      const zoneCats = [...new Set(zoned.map(i => i.category))]
+                      const zoneColor = zoneCats.length === 1 ? pinColor(zoneCats[0]) : null
+                      return (
+                        <div key={zone.id}
+                          className={`drag-zone absolute -translate-x-1/2 -translate-y-1/2 px-2.5 py-1.5 rounded-lg cursor-pointer transition-all select-none min-w-[60px] ${
+                            selectedZone === zone.id ? 'bg-indigo-500/20 border-indigo-500' : 'bg-indigo-500/10 border-indigo-500/30'
+                          } ${glowingZoneId === zone.id ? '!border-emerald-400 !shadow-[0_0_15px_rgba(16,185,129,0.5),0_0_30px_rgba(16,185,129,0.2)] !bg-emerald-500/20 !z-10' : ''} ${hasGlowing ? '!border-indigo-500 !shadow-[0_0_0_3px_rgba(99,102,241,0.2),0_0_20px_rgba(99,102,241,0.15)] animate-pulse' : ''}`}
+                          data-zone={zone.id} data-room-id={room.id}
+                          style={{ left: `${zone.x}%`, top: `${zone.y}%`, border: '1px dashed', ...(zoneColor ? { borderColor: zoneColor, background: `${zoneColor}15` } : {}) }}
+                          onMouseDown={e => { if (!(e.target as HTMLElement).closest('.map-pin')) startDrag(e.currentTarget) }}
+                          onTouchStart={e => { if (!(e.target as HTMLElement).closest('.map-pin')) startDrag(e.currentTarget) }}
+                          onClick={e => { e.stopPropagation(); if (!(e.target as HTMLElement).closest('.map-pin')) setSelectedZone(selectedZone === zone.id ? null : zone.id) }}>
+                          <span className="block text-center text-xs text-gray-500 dark:text-gray-400 opacity-40 cursor-grab select-none mb-0.5">⠿</span>
+                          <span className="block text-[11px] text-gray-500 dark:text-gray-400 font-semibold text-center pointer-events-none select-none">{zone.label}</span>
+                          {zoned.length > 0 && (
+                            <span className="absolute -top-1.5 -right-1.5 w-4.5 h-4.5 rounded-full bg-indigo-500 text-white text-[10px] font-bold flex items-center justify-center pointer-events-none select-none">{zoned.length}</span>
+                          )}
+                          {zoned.map(i => (
+                            <div key={i.id}
+                              className={`map-pin absolute -translate-x-1/2 -translate-y-1/2 w-7 h-7 rounded-full flex items-center justify-center text-sm cursor-pointer shadow-md z-2 transition-all hover:scale-120 ${
+                                glowingItemId === i.id ? '!z-6 animate-pulse-glow' : ''
+                              }`}
+                              data-item-id={i.id} data-pin-for={i.id}
+                              style={{ background: pinColor(i.category) }}
+                              onClick={e => { e.stopPropagation(); setGlowingItemId(glowingItemId === i.id ? null : i.id) }}>
+                              {pinIcon(i.name)}
+                            </div>
+                          ))}
+                        </div>
+                      )
+                    })}
+                  </div>
+                  {/* Unsorted bar */}
+                  {(() => {
+                    const unsorted = roomItems.filter(i => !room.zones.some(z => Math.abs(i.zoneX - z.x) < 15 && Math.abs(i.zoneY - z.y) < 15))
+                    if (unsorted.length === 0) return null
+                    return (
+                      <div className="flex items-center gap-2 p-2.5 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 flex-wrap">
+                        <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 whitespace-nowrap">📦 Unsorted / Off-Map Items</span>
+                        {unsorted.map(i => (
+                          <span key={i.id} onClick={() => setGlowingItemId(glowingItemId === i.id ? null : i.id)}
+                            className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-full text-gray-700 dark:text-gray-300 whitespace-nowrap cursor-pointer hover:border-indigo-500 transition-colors ${
+                              glowingItemId === i.id ? '!border-indigo-500 !shadow-[0_0_0_2px_rgba(99,102,241,0.2)]' : ''
+                            }`}>
+                            {pinIcon(i.name)} {i.name}
+                          </span>
+                        ))}
+                      </div>
+                    )
+                  })()}
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -1689,8 +1240,34 @@ export default function App() {
         {/* Mobile Map Overlay */}
         {showMobileMap && (
           <div className="fixed inset-0 z-[60] bg-white dark:bg-gray-800 flex flex-col animate-[fadeIn_0.2s_ease-out] md:hidden">
+            <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
+              <h3 className="text-lg font-semibold">🗺️ {room.name}</h3>
+              <button aria-label="Close map" onClick={() => setShowMobileMap(false)} className="bg-none border-none text-lg cursor-pointer text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 p-1 rounded transition-colors touch-manipulation">✕</button>
+            </div>
             <div className="flex-1 p-4 overflow-auto">
-              <RoomMapPanel room={room} roomItems={roomItems} selectedZone={selectedZone} glowingItemId={glowingItemId} glowingZoneId={glowingZoneId} isEditingMap={isEditingMap} onClose={() => setShowMobileMap(false)} onToggleEdit={() => setIsEditingMap(v => !v)} onZoneMove={(rid, zid, x, y) => setRooms(prev => prev.map(r => r.id === rid ? { ...r, zones: r.zones.map(z => z.id === zid ? { ...z, x, y } : z) } : r))} onSelectZone={setSelectedZone} onPinClick={(id) => setGlowingItemId(glowingItemId === id ? null : id)} onAddFurniture={async (rid) => { const n = await showInlinePrompt('Furniture name (e.g. Nightstand, Pantry):'); if (n && n.trim()) addZone(rid, n.trim()) }} onDeleteZone={deleteZone} onAssignItem={assignItemToZone} onUnassignItem={unassignItem} onMoveToRoom={moveItemToRoom} rooms={rooms} currentRoomId={currentRoomId} />
+              <div className="relative w-full aspect-[4/3] min-h-[300px] bg-gray-50 dark:bg-gray-900 border-2 border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden room-border">
+                <div className="absolute inset-0 flex items-center justify-center text-xs text-gray-400 font-medium pointer-events-none whitespace-nowrap">Drag zones to rearrange</div>
+                {room.zones.map(zone => {
+                  const zoned = roomItems.filter(i => Math.abs(i.zoneX - zone.x) < 15 && Math.abs(i.zoneY - zone.y) < 15)
+                  return (
+                    <div key={zone.id}
+                      className={`drag-zone absolute -translate-x-1/2 -translate-y-1/2 px-2 py-1 rounded-lg cursor-pointer transition-all select-none ${
+                        selectedZone === zone.id ? 'bg-indigo-500/20 border-indigo-500' : 'bg-indigo-500/10 border-indigo-500/30'
+                      }`}
+                      data-zone={zone.id} data-room-id={room.id}
+                      style={{ left: `${zone.x}%`, top: `${zone.y}%`, border: '1px dashed' }}>
+                      <span className="block text-[11px] text-gray-500 font-semibold text-center pointer-events-none">{zone.label}</span>
+                      {zoned.map(i => (
+                        <div key={i.id}
+                          className={`map-pin absolute -translate-x-1/2 -translate-y-full w-7 h-7 rounded-full flex items-center justify-center text-sm cursor-pointer shadow-md z-5`}
+                          style={{ background: pinColor(i.category), filter: 'drop-shadow(0 2px 3px rgba(0,0,0,0.3))' }}>
+                          {pinIcon(i.name)}
+                        </div>
+                      ))}
+                    </div>
+                  )
+                })}
+              </div>
             </div>
           </div>
         )}
@@ -1821,7 +1398,7 @@ export default function App() {
             onClick={e => { if (e.target === e.currentTarget) setShowScannedGallery(false) }}>
             <div className="sticky top-0 z-10 bg-[rgba(15,23,42,0.97)] border-b border-slate-700/50">
               <div className="flex items-center justify-between p-4 max-w-6xl mx-auto w-full">
-                <h2 className="text-slate-100 text-lg font-semibold">📸 Photo Library ({photosFromServer ? Object.values(photosFromServer).reduce((sum: number, arr: any[]) => sum + arr.length, 0) + scannedItems.length : scannedItems.length})</h2>
+                <h2 className="text-slate-100 text-lg font-semibold">📸 Photo Library ({scannedItems.length})</h2>
                 <div className="flex items-center gap-3">
                   <button onClick={() => syncHistory()}
                     className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg cursor-pointer transition-colors touch-manipulation">Sync History</button>
@@ -1831,261 +1408,65 @@ export default function App() {
               </div>
             </div>
 
-            {photosLoading && (
+            {scannedItems.length === 0 ? (
               <div className="flex-1 flex flex-col items-center justify-center text-slate-500">
-                <div className="w-10 h-10 border-3 border-indigo-500 border-t-transparent rounded-full animate-spin mb-3" />
-                <p className="text-sm text-slate-400">Loading photos...</p>
+                <div className="text-6xl mb-4">📸</div>
+                <p className="text-lg font-medium mb-1">No scanned items yet</p>
+                <p className="text-sm">Use the Scan button to take photos of your items</p>
               </div>
-            )}
-
-            {!photosLoading && (
-              <>
-                {/* ── Server photos (R2) ── */}
-                {photosFromServer && Object.keys(photosFromServer).length > 0 ? (
-                  <div className="flex-1 overflow-y-auto max-w-6xl mx-auto w-full p-4 pt-3">
-                    {['Documents', 'Keys', 'Electronics', 'Warranties', 'Valuables', 'Other'].map(cat => {
-                      const serverGroup = photosFromServer[cat] || []
-                      const localGroup = scannedItems.filter(i => i.category === cat && !serverGroup.some((s: any) => s.r2_key && i.imageUrl?.includes(s.r2_key)))
-                      const combined = [...serverGroup.map((s: any) => ({
-                        id: s.id, name: s.item_name, category: s.category,
-                        location: s.room_location, imageUrl: `${AI_SCAN_URL}/api/photos/${s.r2_key}`,
-                        imageData: undefined as string | undefined,
-                        roomId: currentRoomId, zoneX: 50, zoneY: 50,
-                        createdAt: s.created_at, lastConfirmed: s.created_at, aiDetected: true,
-                      } satisfies ScannedItem)), ...localGroup]
-                      if (combined.length === 0) return null
-                      return (
-                        <div key={cat} className="mb-6">
-                          <div className="flex items-center gap-2 mb-3 sticky top-0 bg-[rgba(15,23,42,0.95)] py-2 z-[1]">
-                            <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
-                              cat === 'Documents' ? 'bg-blue-500/20 text-blue-400' :
-                              cat === 'Keys' ? 'bg-amber-500/20 text-amber-400' :
-                              cat === 'Electronics' ? 'bg-cyan-500/20 text-cyan-400' :
-                              cat === 'Warranties' ? 'bg-purple-500/20 text-purple-400' :
-                              cat === 'Valuables' ? 'bg-pink-500/20 text-pink-400' :
-                              'bg-slate-500/20 text-slate-400'
-                            }`}>{cat}</span>
-                            <span className="text-slate-500 text-xs">{combined.length}</span>
-                            <div className="flex-1 border-t border-slate-700/30" />
-                          </div>
-                          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5">
-                            {combined.map(item => (
-                              <div key={item.id}
-                                className="bg-slate-800 rounded-xl overflow-hidden border border-slate-700 hover:border-indigo-500/60 hover:shadow-[0_0_15px_rgba(99,102,241,0.2)] transition-all group cursor-pointer">
-                                <div className="aspect-[4/3] bg-slate-700 relative overflow-hidden">
-                                  <img src={item.imageUrl || item.imageData} alt={item.name} className="w-full h-full object-cover" />
-                                  {item.aiDetected && (
-                                    <span className="absolute top-1.5 left-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-500/80 text-white font-semibold">AI</span>
-                                  )}
-                                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/60 transition-colors flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
-                                    <button onClick={() => addScannedToMain(item)}
-                                      className="px-2.5 py-1.5 bg-emerald-500 text-white text-[11px] rounded-lg cursor-pointer hover:bg-emerald-600 transition-colors touch-manipulation font-semibold">+ Add</button>
-                                    <button onClick={() => {
-                                      const parts = item.imageUrl?.split('/api/photos/')
-                                      setAssigningPhoto({ id: item.id, r2Key: parts?.length === 2 ? parts[1] : undefined, imageData: item.imageData })
-                                    }}
-                                      className="px-2.5 py-1.5 bg-indigo-500 text-white text-[11px] rounded-lg cursor-pointer hover:bg-indigo-600 transition-colors touch-manipulation font-semibold">🔗 Assign</button>
-                                    <button onClick={() => { if (confirm('Delete this scan?')) deleteScannedItem(item.id) }}
-                                      className="px-2.5 py-1.5 bg-red-500/80 text-white text-[11px] rounded-lg cursor-pointer hover:bg-red-600 transition-colors touch-manipulation">🗑️</button>
-                                  </div>
-                                </div>
-                                <div className="p-2">
-                                  <p className="text-slate-100 text-xs font-semibold truncate">{item.name}</p>
-                                  <p className="text-slate-500 text-[10px] mt-0.5">{timeAgo(item.lastConfirmed)}</p>
-                                </div>
+            ) : (
+              <div className="flex-1 overflow-y-auto max-w-6xl mx-auto w-full p-4 pt-3">
+                {/* Group by category */}
+                {['Documents', 'Keys', 'Electronics', 'Warranties', 'Valuables', 'Other'].map(cat => {
+                  const group = scannedItems.filter(i => i.category === cat)
+                  if (group.length === 0) return null
+                  return (
+                    <div key={cat} className="mb-6">
+                      <div className="flex items-center gap-2 mb-3 sticky top-0 bg-[rgba(15,23,42,0.95)] py-2 z-[1]">
+                        <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
+                          cat === 'Documents' ? 'bg-blue-500/20 text-blue-400' :
+                          cat === 'Keys' ? 'bg-amber-500/20 text-amber-400' :
+                          cat === 'Electronics' ? 'bg-cyan-500/20 text-cyan-400' :
+                          cat === 'Warranties' ? 'bg-purple-500/20 text-purple-400' :
+                          cat === 'Valuables' ? 'bg-pink-500/20 text-pink-400' :
+                          'bg-slate-500/20 text-slate-400'
+                        }`}>{cat}</span>
+                        <span className="text-slate-500 text-xs">{group.length}</span>
+                        <div className="flex-1 border-t border-slate-700/30" />
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5">
+                        {group.map(item => (
+                          <div key={item.id}
+                            className="bg-slate-800 rounded-xl overflow-hidden border border-slate-700 hover:border-indigo-500/60 hover:shadow-[0_0_15px_rgba(99,102,241,0.2)] transition-all group cursor-pointer">
+                            <div className="aspect-[4/3] bg-slate-700 relative overflow-hidden">
+                              <img src={item.imageData} alt={item.name} className="w-full h-full object-cover" />
+                              {item.aiDetected && (
+                                <span className="absolute top-1.5 left-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-500/80 text-white font-semibold">AI</span>
+                              )}
+                              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/60 transition-colors flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
+                                <button onClick={() => addScannedToMain(item)}
+                                  className="px-2.5 py-1.5 bg-emerald-500 text-white text-[11px] rounded-lg cursor-pointer hover:bg-emerald-600 transition-colors touch-manipulation font-semibold">+ Add</button>
+                                <button onClick={() => { if (confirm('Delete this scan?')) deleteScannedItem(item.id) }}
+                                  className="px-2.5 py-1.5 bg-red-500/80 text-white text-[11px] rounded-lg cursor-pointer hover:bg-red-600 transition-colors touch-manipulation">🗑️</button>
                               </div>
-                            ))}
-                          </div>
-                        </div>
-                      )
-                    })}
-                    {scannedItems.filter(i => !['Documents','Keys','Electronics','Warranties','Valuables','Other'].includes(i.category)).length > 0 && (
-                      <div className="text-center py-6 text-slate-500 text-xs italic">
-                        {scannedItems.filter(i => !['Documents','Keys','Electronics','Warranties','Valuables','Other'].includes(i.category)).length} items in uncategorized
-                      </div>
-                    )}
-                  </div>
-                ) : scannedItems.length === 0 ? (
-                  <div className="flex-1 flex flex-col items-center justify-center text-slate-500">
-                    <div className="text-6xl mb-4">📸</div>
-                    <p className="text-lg font-medium mb-1">No scanned items yet</p>
-                    <p className="text-sm">Use the Scan button to take photos of your items</p>
-                  </div>
-                ) : (
-                  <div className="flex-1 overflow-y-auto max-w-6xl mx-auto w-full p-4 pt-3">
-                    {/* Fallback: local-only scanned items */}
-                    {['Documents', 'Keys', 'Electronics', 'Warranties', 'Valuables', 'Other'].map(cat => {
-                      const group = scannedItems.filter(i => i.category === cat)
-                      if (group.length === 0) return null
-                      return (
-                        <div key={cat} className="mb-6">
-                          <div className="flex items-center gap-2 mb-3 sticky top-0 bg-[rgba(15,23,42,0.95)] py-2 z-[1]">
-                            <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
-                              cat === 'Documents' ? 'bg-blue-500/20 text-blue-400' :
-                              cat === 'Keys' ? 'bg-amber-500/20 text-amber-400' :
-                              cat === 'Electronics' ? 'bg-cyan-500/20 text-cyan-400' :
-                              cat === 'Warranties' ? 'bg-purple-500/20 text-purple-400' :
-                              cat === 'Valuables' ? 'bg-pink-500/20 text-pink-400' :
-                              'bg-slate-500/20 text-slate-400'
-                            }`}>{cat}</span>
-                            <span className="text-slate-500 text-xs">{group.length}</span>
-                            <div className="flex-1 border-t border-slate-700/30" />
-                          </div>
-                          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5">
-                            {group.map(item => (
-                              <div key={item.id}
-                                className="bg-slate-800 rounded-xl overflow-hidden border border-slate-700 hover:border-indigo-500/60 hover:shadow-[0_0_15px_rgba(99,102,241,0.2)] transition-all group cursor-pointer">
-                                <div className="aspect-[4/3] bg-slate-700 relative overflow-hidden">
-                                  <img src={item.imageUrl || item.imageData} alt={item.name} className="w-full h-full object-cover" />
-                                  {item.aiDetected && (
-                                    <span className="absolute top-1.5 left-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-500/80 text-white font-semibold">AI</span>
-                                  )}
-                                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/60 transition-colors flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
-                                    <button onClick={() => addScannedToMain(item)}
-                                      className="px-2.5 py-1.5 bg-emerald-500 text-white text-[11px] rounded-lg cursor-pointer hover:bg-emerald-600 transition-colors touch-manipulation font-semibold">+ Add</button>
-                                    <button onClick={() => {
-                                      const parts = item.imageUrl?.split('/api/photos/')
-                                      setAssigningPhoto({ id: item.id, r2Key: parts?.length === 2 ? parts[1] : undefined, imageData: item.imageData })
-                                    }}
-                                      className="px-2.5 py-1.5 bg-indigo-500 text-white text-[11px] rounded-lg cursor-pointer hover:bg-indigo-600 transition-colors touch-manipulation font-semibold">🔗 Assign</button>
-                                    <button onClick={() => { if (confirm('Delete this scan?')) deleteScannedItem(item.id) }}
-                                      className="px-2.5 py-1.5 bg-red-500/80 text-white text-[11px] rounded-lg cursor-pointer hover:bg-red-600 transition-colors touch-manipulation">🗑️</button>
-                                  </div>
-                                </div>
-                                <div className="p-2">
-                                  <p className="text-slate-100 text-xs font-semibold truncate">{item.name}</p>
-                                  <p className="text-slate-500 text-[10px] mt-0.5">{timeAgo(item.lastConfirmed)}</p>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )
-                    })}
-                    {scannedItems.filter(i => !['Documents','Keys','Electronics','Warranties','Valuables','Other'].includes(i.category)).length > 0 && (
-                      <div className="text-center py-6 text-slate-500 text-xs italic">
-                        {scannedItems.filter(i => !['Documents','Keys','Electronics','Warranties','Valuables','Other'].includes(i.category)).length} items in uncategorized
-                      </div>
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        )}
-
-        {/* ── Assign Photo to Item Picker ── */}
-        {assigningPhoto && (
-          <div role="dialog" aria-modal="true" aria-label="Assign photo to item"
-            className="fixed inset-0 z-[10000] bg-black/50 flex items-center justify-center p-5 animate-[fadeIn_0.15s_ease-out]"
-            onClick={e => { if (e.target === e.currentTarget) setAssigningPhoto(null) }}>
-            <div className="bg-gray-900 rounded-xl shadow-xl p-5 w-full max-w-sm max-h-[70vh] flex flex-col border border-gray-700">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-slate-100 text-sm font-semibold">🔗 Assign photo to item</h3>
-                <button onClick={() => setAssigningPhoto(null)}
-                  className="bg-none border-none text-slate-400 cursor-pointer hover:text-slate-200 p-1 rounded transition-colors text-lg">✕</button>
-              </div>
-              <input id="assign-search" type="text" placeholder="Search items..." autoComplete="off"
-                className="w-full px-3 py-2 text-sm bg-slate-800 border border-slate-600 rounded-lg text-slate-100 outline-none focus:border-indigo-500 mb-3"
-                onInput={e => (e.currentTarget as HTMLInputElement).focus()} />
-              <div className="flex-1 overflow-y-auto space-y-1">
-                {items.length === 0 ? (
-                  <p className="text-slate-500 text-xs text-center py-6">No items yet. Add items first.</p>
-                ) : (
-                  items.map(it => (
-                    <button key={it.id} onClick={() => assignPhotoToItem(assigningPhoto.id, assigningPhoto.r2Key, assigningPhoto.imageData, it.id)}
-                      className="w-full flex items-center gap-3 px-3 py-2.5 bg-slate-800 hover:bg-indigo-900/40 border border-slate-700 hover:border-indigo-500/50 rounded-lg text-left transition-all cursor-pointer group">
-                      <div className="w-8 h-8 rounded-full flex-shrink-0 overflow-hidden bg-slate-700">
-                        {it.imageKey ? (
-                          <img src={`${AI_SCAN_URL}/api/photos/${it.imageKey}`} alt={it.name} className="w-full h-full object-cover" />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center text-xs"
-                            style={{ background: `${pinColor(it.category)}20`, color: pinColor(it.category) }}>
-                            {categoryIcon(it.category)}
-                          </div>
-                        )}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-slate-200 truncate group-hover:text-indigo-300 transition-colors">{it.name}</p>
-                        <p className="text-xs text-slate-500">{it.location} · {rooms.find(r => r.id === it.roomId)?.name || 'Unknown'}</p>
-                      </div>
-                    </button>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* ── Add Photo to Item Picker ── */}
-        {pickForItem && (
-          <div role="dialog" aria-modal="true" aria-label="Add photo to item"
-            className="fixed inset-0 z-[10001] bg-black/50 flex items-center justify-center p-5 animate-[fadeIn_0.15s_ease-out]"
-            onClick={e => { if (e.target === e.currentTarget) setPickForItem(null) }}>
-            <div className="bg-gray-900 rounded-xl shadow-xl p-5 w-full max-w-sm max-h-[70vh] flex flex-col border border-gray-700">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-slate-100 text-sm font-semibold">📷 Add photo to {pickForItem.name}</h3>
-                <button onClick={() => setPickForItem(null)}
-                  className="bg-none border-none text-slate-400 cursor-pointer hover:text-slate-200 p-1 rounded transition-colors text-lg">✕</button>
-              </div>
-              {pickForItem.imageKey && (
-                <button onClick={() => removeItemPhoto(pickForItem.id)}
-                  className="w-full px-3 py-2 mb-3 text-sm bg-transparent border border-red-500/40 text-red-400 hover:bg-red-500/10 rounded-lg transition-all cursor-pointer">🗑️ Remove current photo</button>
-              )}
-              <input id="pick-photo-search" type="text" placeholder="Search photos..." autoComplete="off"
-                className="w-full px-3 py-2 text-sm bg-slate-800 border border-slate-600 rounded-lg text-slate-100 outline-none focus:border-indigo-500 mb-3"
-                value={pickSearch} onInput={e => setPickSearch((e.currentTarget as HTMLInputElement).value)} />
-              <div className="flex-1 overflow-y-auto space-y-1">
-                {(() => {
-                  const q = pickSearch.toLowerCase()
-                  const used = new Set<string>()
-                  const rows: any[] = []
-                  /* a) Local scanned items */
-                  scannedItems.filter(s => s.imageUrl || s.imageData).forEach(s => {
-                    if (!q || s.name.toLowerCase().includes(q) || s.category.toLowerCase().includes(q) || s.location.toLowerCase().includes(q)) {
-                      if (s.imageUrl) used.add(s.imageUrl)
-                      rows.push(
-                        <div key={`local-${s.id}`} className="w-full flex items-center gap-3 px-3 py-2.5 bg-slate-800 hover:bg-indigo-900/40 border border-slate-700 hover:border-indigo-500/50 rounded-lg text-left transition-all">
-                          <img src={s.imageUrl ?? s.imageData} alt={s.name} className="w-8 h-8 rounded-full flex-shrink-0 object-cover bg-slate-700" />
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-slate-200 truncate">{s.name}</p>
-                            <p className="text-xs text-slate-500">{s.category} · {s.location}</p>
-                          </div>
-                          <button onClick={() => attachPhotoToItem(pickForItem.id, s.imageUrl ? s.imageUrl.split('/api/photos/')[1] : undefined, s.imageData)}
-                            className="flex-shrink-0 px-2.5 py-1 text-xs font-medium bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 hover:bg-indigo-500/40 hover:text-indigo-200 rounded-lg transition-all cursor-pointer">Attach</button>
-                        </div>
-                      )
-                    }
-                  })
-                  /* b) Server photos (dedupe against already-listed URLs) */
-                  if (photosFromServer) {
-                    Object.values(photosFromServer).flat().forEach((p: any) => {
-                      if (!p || !p.r2_key) return
-                      if (!q || (p.item_name || '').toLowerCase().includes(q) || (p.category || '').toLowerCase().includes(q) || (p.room_location || '').toLowerCase().includes(q)) {
-                        const url = `${AI_SCAN_URL}/api/photos/${p.r2_key}`
-                        if (used.has(url)) return
-                        used.add(url)
-                        rows.push(
-                          <div key={`server-${p.r2_key}`} className="w-full flex items-center gap-3 px-3 py-2.5 bg-slate-800 hover:bg-indigo-900/40 border border-slate-700 hover:border-indigo-500/50 rounded-lg text-left transition-all">
-                            <img src={url} alt={p.item_name || 'Photo'} className="w-8 h-8 rounded-full flex-shrink-0 object-cover bg-slate-700" />
-                            <div className="flex-1 min-w-0">
-                              <p className="text-sm font-medium text-slate-200 truncate">{p.item_name || 'Untitled'}</p>
-                              <p className="text-xs text-slate-500">{p.category || 'Other'} · {p.room_location || 'Scanned'}</p>
                             </div>
-                            <button onClick={() => attachPhotoToItem(pickForItem.id, p.r2_key, undefined)}
-                              className="flex-shrink-0 px-2.5 py-1 text-xs font-medium bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 hover:bg-indigo-500/40 hover:text-indigo-200 rounded-lg transition-all cursor-pointer">Attach</button>
+                            <div className="p-2">
+                              <p className="text-slate-100 text-xs font-semibold truncate">{item.name}</p>
+                              <p className="text-slate-500 text-[10px] mt-0.5">{timeAgo(item.lastConfirmed)}</p>
+                            </div>
                           </div>
-                        )
-                      }
-                    })
-                  }
-                  if (rows.length === 0) {
-                    return <p className="text-slate-500 text-xs text-center py-6">No photos found.</p>
-                  }
-                  return rows
-                })()}
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })}
+                {scannedItems.filter(i => !['Documents','Keys','Electronics','Warranties','Valuables','Other'].includes(i.category)).length > 0 && (
+                  <div className="text-center py-6 text-slate-500 text-xs italic">
+                    {scannedItems.filter(i => !['Documents','Keys','Electronics','Warranties','Valuables','Other'].includes(i.category)).length} items in uncategorized
+                  </div>
+                )}
               </div>
-            </div>
+            )}
           </div>
         )}
 
@@ -2104,14 +1485,10 @@ export default function App() {
                 e.preventDefault()
                 const fd = new FormData(e.currentTarget)
                 const name = fd.get('name') as string; const location = fd.get('location') as string; const category = fd.get('category') as string
-                const roomId = fd.get('roomId') as string
                 const pin = document.getElementById('mini-pin')
                 const zx = pin && pin.style.left ? parseFloat(pin.style.left) : (editingItem?.zoneX ?? 50)
                 const zy = pin && pin.style.top ? parseFloat(pin.style.top) : (editingItem?.zoneY ?? 50)
-                if (editingItem) {
-                  updateItem(editingItem.id, name, location, category, zx, zy)
-                  if (roomId && roomId !== editingItem.roomId) moveItemToRoom(editingItem.id, roomId)
-                }
+                if (editingItem) updateItem(editingItem.id, name, location, category)
                 else addItem(name, location, category, zx, zy)
                 setShowAddModal(false); setEditingItem(null)
               }} className="flex flex-col gap-4">
@@ -2124,13 +1501,6 @@ export default function App() {
                   <label className="text-xs font-semibold text-gray-700 dark:text-gray-200">Location</label>
                   <input name="location" defaultValue={editingItem?.location || ''} placeholder="e.g. Top desk drawer" required
                     className="px-4 py-2.5 border border-gray-200 dark:border-gray-600 rounded-lg text-sm outline-none focus:border-indigo-500 focus:ring-3 focus:ring-indigo-500/40 bg-white dark:bg-gray-700 dark:text-gray-100" />
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-xs font-semibold text-gray-700 dark:text-gray-200">Room</label>
-                  <select name="roomId" defaultValue={editingItem?.roomId || currentRoomId}
-                    className="px-4 py-2.5 border border-gray-200 dark:border-gray-600 rounded-lg text-sm outline-none focus:border-indigo-500 focus:ring-3 focus:ring-indigo-500/40 bg-white dark:bg-gray-700 dark:text-gray-100">
-                    {rooms.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
-                  </select>
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <label className="text-xs font-semibold text-gray-700 dark:text-gray-200">Category</label>
@@ -2293,23 +1663,6 @@ export default function App() {
                                 📍 {item.name}
                               </button>
                             )
-                          })}
-                        </div>
-                      )}
-                      {m.actions?.length > 0 && (
-                        <div className="mt-2 pt-2 border-t border-gray-200 dark:border-gray-700 flex flex-wrap gap-1.5">
-                          {m.actions.map((action, ai) => {
-                            const key = `${i}_${ai}`
-                            if (doneActions.includes(key)) return <span key={key} className="px-2.5 py-1.5 text-[11px] rounded-lg font-medium bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-500/30">✅ {action.label}</span>
-                            if (failedActions.includes(key)) return <span key={key} className="px-2.5 py-1.5 text-[11px] rounded-lg font-medium bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 border border-red-300 dark:border-red-500/30">❌ {action.label}</span>
-                            return <button key={key} onClick={() => {
-                              const ok = executeAction(action)
-                              if (ok) setDoneActions(prev => [...prev, key])
-                              else { setFailedActions(prev => [...prev, key]); setTimeout(() => setFailedActions(prev => prev.filter(k => k !== key)), 2500) }
-                            }}
-                              className="px-2.5 py-1.5 text-[11px] rounded-lg font-medium border cursor-pointer transition-all touch-manipulation bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 border-gray-300 dark:border-gray-600 hover:border-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-500/20">
-                              ⚡ {action.label}
-                            </button>
                           })}
                         </div>
                       )}

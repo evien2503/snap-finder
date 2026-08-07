@@ -71,7 +71,6 @@ export default {
       if (request.method !== 'POST') return new Response(JSON.stringify({ error: 'POST only' }), { status: 405, headers: { ...CORS, 'Content-Type': 'application/json' } })
 
       if (path === '/api/scan') return handleVisionScan(request, env)
-      if (path === '/api/vision') return handleGatewayVision(request, env)
       if (path === '/api/match') return handleVisionMatch(request, env)
       if (path === '/api/history') return handleHistory(request, env)
       if (path === '/api/search') return handleVectorSearch(request, env)
@@ -148,54 +147,6 @@ async function handleVisionScan(request: Request, env: Env): Promise<Response> {
   return new Response(JSON.stringify({ scanId, ...parsed }), {
     headers: { ...CORS, 'Content-Type': 'application/json' },
   })
-}
-
-/* ════════════════════════════════════════════════════
-    1b. GATEWAY VISION PROXY  —  /api/vision
-    Forwards image to company AI Gateway (mimo-v2.5) server-to-server
-    to avoid browser CORS. Frontend passes the key as x-ai-key header.
-   ════════════════════════════════════════════════════ */
-const VISION_GATEWAY_URL = 'https://ai-gateway.guidesify.com/v1/chat/completions'
-
-async function handleGatewayVision(request: Request, env: Env): Promise<Response> {
-  const apiKey = request.headers.get('x-ai-key') || ''
-  let payload: any
-  try { payload = await request.json() } catch { throw new Error('Invalid JSON body') }
-  const { image, roomName = 'Scanned', location = 'Scanned', prompt } = payload || {}
-  if (!image) return new Response(JSON.stringify({ error: 'Missing image' }), { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } })
-  if (!apiKey) return new Response(JSON.stringify({ error: 'Missing AI key (x-ai-key)' }), { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } })
-
-  const systemText = prompt || `You are an item identification assistant. Look at this photo and identify the single most prominent item. Return ONLY valid JSON with keys: "itemName", "confidence" ("high"/"medium"/"low"), "distinctFeatures" (array of 2-4 strings), "suggestedCategory" (one of: Documents, Keys, Electronics, Valuables, Warranties, Other), "description" (one short sentence).`
-
-  const completionBody = JSON.stringify({
-    model: 'mimo-v2.5',
-    max_tokens: 2000,
-    messages: [{
-      role: 'user',
-      content: [
-        { type: 'text', text: systemText },
-        { type: 'image_url', image_url: { url: image } },
-      ],
-    }],
-  })
-
-  const upstream = await fetch(VISION_GATEWAY_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: completionBody,
-  })
-
-  const upstreamText = await upstream.text()
-  if (!upstream.ok) {
-    return new Response(JSON.stringify({ error: `Gateway error ${upstream.status}`, detail: upstreamText }), {
-      status: 502, headers: { ...CORS, 'Content-Type': 'application/json' },
-    })
-  }
-
-  return new Response(upstreamText, { headers: { ...CORS, 'Content-Type': 'application/json' } })
 }
 
 /* ════════════════════════════════════════════════════
