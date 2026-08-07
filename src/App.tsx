@@ -64,43 +64,48 @@ interface MatchResult {
 }
 
 async function visionScan(base64Image: string, userId: string, roomName = 'Unknown', location = 'Scanned'): Promise<VisionResult | null> {
-  /* AI Gateway — mimo v2.5 vision scan */
-  if (!AI_GATEWAY_KEY) return null
-  try {
-    const res = await fetch(AI_GATEWAY_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${AI_GATEWAY_KEY}` },
-      body: JSON.stringify({
-        model: 'mimo-v2.5',
-        messages: [{
-          role: 'user',
-          content: [
-            { type: 'text', text: `You are an item identification assistant. Look at this photo and identify the single most prominent item. Return ONLY valid JSON with keys: "itemName", "confidence" ("high"/"medium"/"low"), "distinctFeatures" (array of 2-4 strings), "suggestedCategory" (one of: Documents, Keys, Electronics, Valuables, Warranties, Other), "description" (one short sentence). Example: {"itemName":"Passport","confidence":"high","distinctFeatures":["Red cover","Gold emblem"],"suggestedCategory":"Documents","description":"A travel document kept in a drawer"}` },
-            { type: 'image_url', image_url: { url: base64Image } },
-          ],
-        }],
-        max_tokens: 2000,
-      }),
-    })
-    if (!res.ok) return null
-    const data = await res.json()
-    const msg = data.choices?.[0]?.message
-    /* mimo is a reasoning model — try final answer (content) first, then reasoning */
-    const candidate = (msg?.content || msg?.reasoning_content || '').toString()
-    /* Strip markdown code fences, then extract first balanced JSON object */
-    const cleaned = candidate.replace(/```[a-z]*\s*/gi, '').replace(/```/g, '')
-    const open = cleaned.indexOf('{')
-    if (open >= 0) {
-      let depth = 0
-      for (let i = open; i < cleaned.length; i++) {
-        if (cleaned[i] === '{') depth++
-        else if (cleaned[i] === '}') { depth--; if (depth === 0) { try { return JSON.parse(cleaned.slice(open, i + 1)) } catch { /* continue */ } } }
+  /* PRIMARY: Gateway vision via worker proxy (avoids browser CORS). mimo-v2.5 handled server-side. */
+  if (AI_GATEWAY_KEY && AI_SCAN_URL) {
+    try {
+      const res = await fetch(`${AI_SCAN_URL}/api/vision`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-ai-key': AI_GATEWAY_KEY },
+        body: JSON.stringify({ image: base64Image, roomName, location }),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        const msg = data.choices?.[0]?.message
+        /* mimo is a reasoning model — try final answer (content) first, then reasoning */
+        const candidate = (msg?.content || msg?.reasoning_content || '').toString()
+        /* Strip markdown code fences, then extract first balanced JSON object */
+        const cleaned = candidate.replace(/```[a-z]*\s*/gi, '').replace(/```/g, '')
+        const open = cleaned.indexOf('{')
+        if (open >= 0) {
+          let depth = 0
+          for (let i = open; i < cleaned.length; i++) {
+            if (cleaned[i] === '{') depth++
+            else if (cleaned[i] === '}') { depth--; if (depth === 0) { try { return JSON.parse(cleaned.slice(open, i + 1)) } catch { /* continue */ } } }
+          }
+        }
       }
-    }
-    return null
-  } catch {
-    return null
+    } catch { /* fall through to worker */ }
   }
+
+  /* FALLBACK: Cloudflare Worker /api/scan (own vision model) */
+  if (AI_SCAN_URL) {
+    try {
+      const res = await fetch(`${AI_SCAN_URL}/api/scan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: base64Image, userId, roomName, location }),
+      })
+      if (!res.ok) return null
+      return await res.json()
+    } catch {
+      return null
+    }
+  }
+  return null
 }
 
 async function visionMatch(base64Image: string, userId: string): Promise<MatchResult | null> {
