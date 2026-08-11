@@ -1188,43 +1188,51 @@ export default function App() {
       console.error('Chat action failed — item not found', { actionId: action.itemId, type: action.type, available: items.map(i => `${i.id}=${i.name}`) })
       return false
     }
-    /* Resolve room/zone IDs with name fallback (AI may hallucinate IDs) */
-    let resolvedRoomId = action.roomId
-    if (resolvedRoomId && !rooms.find(r => r.id === resolvedRoomId)) {
-      const rm = rooms.find(r => r.name.toLowerCase().trim() === resolvedRoomId.toLowerCase().trim())
-      if (rm) resolvedRoomId = rm.id
-      else { console.error('Chat action failed — room not found', { roomId: action.roomId, available: rooms.map(r => `${r.id}=${r.name}`) }); return false }
+
+    /* Tolerant resolver — AI may emit names, slugs, or combined "Room Zone" strings */
+    const norm = (s: string) => s.toLowerCase().trim()
+    const findRoom = (ref: string | undefined): Room | null => {
+      if (!ref) return null
+      const v = norm(ref)
+      /* 1. exact id, 2. exact name */
+      const exact = [...rooms].sort((a, b) => b.name.length - a.name.length)
+        .find(r => r.id === ref || norm(r.name) === v)
+      if (exact) return exact
+      /* 3. room name contained in the value (e.g. "Living Room Desk" → "Living Room") */
+      const contained = [...rooms].sort((a, b) => b.name.length - a.name.length)
+        .find(r => v.includes(norm(r.name)))
+      if (contained) return contained
+      return null
     }
-    let resolvedZoneId = action.zoneId
-    if (resolvedZoneId) {
-      const room = rooms.find(r => r.id === currentRoomId)
-      if (room && !room.zones.find(z => z.id === resolvedZoneId)) {
-        const zn = room.zones.find(z => z.label.toLowerCase().trim() === resolvedZoneId.toLowerCase().trim())
-        if (zn) resolvedZoneId = zn.id
-        else { console.error('Chat action failed — zone not found', { zoneId: action.zoneId, available: room.zones.map(z => `${z.id}=${z.label}`) }); return false }
-      }
+    const findZone = (room: Room | null | undefined, ref: string | undefined): Zone | null => {
+      if (!room || !ref) return null
+      const v = norm(ref)
+      /* 1. exact id, 2. exact label */
+      const exact = room.zones.find(z => z.id === ref || norm(z.label) === v)
+      if (exact) return exact
+      /* 3. label contained in the value */
+      return room.zones.find(z => v.includes(norm(z.label))) || null
     }
+
+    const targetRoom = findRoom(action.roomId)
+    let targetZone = findZone(targetRoom, action.zoneId)
+
     switch (action.type) {
       case 'move_room':
-        if (resolvedRoomId) { moveItemToRoom(item.id, resolvedRoomId); return true }
-        console.error('Chat action failed — move_room missing roomId', action)
-        return false
-      case 'assign_zone':
-        if (resolvedZoneId) { assignItemToZone(item.id, resolvedZoneId); return true }
-        console.error('Chat action failed — assign_zone missing zoneId', action)
-        return false
+        if (!targetRoom) { console.error('Chat action failed — room not found', { roomId: action.roomId, available: rooms.map(r => `${r.id}=${r.name}`) }); return false }
+        moveItemToRoom(item.id, targetRoom.id); return true
+      case 'assign_zone': {
+        /* Zone lives in the current room (or target room if supplied) */
+        const zoneRoom = targetRoom || rooms.find(r => r.id === currentRoomId) || null
+        const z = findZone(zoneRoom, action.zoneId)
+        if (!z) { console.error('Chat action failed — zone not found', { zoneId: action.zoneId, available: zoneRoom?.zones.map(z => `${z.id}=${z.label}`) }); return false }
+        assignItemToZone(item.id, z.id, zoneRoom?.id)
+        return true
+      }
       case 'move_and_assign': {
-        if (!resolvedRoomId || !action.zoneId) { console.error('Chat action failed — move_and_assign missing room or zone', action); return false }
-        const targetRoom = rooms.find(r => r.id === resolvedRoomId)
-        if (!targetRoom) { console.error('Chat action failed — target room not found', { resolvedRoomId }); return false }
-        let targetZoneId = action.zoneId
-        if (!targetRoom.zones.find(z => z.id === targetZoneId)) {
-          const zn = targetRoom.zones.find(z => z.label.toLowerCase().trim() === targetZoneId.toLowerCase().trim())
-          if (zn) targetZoneId = zn.id
-          else { console.error('Chat action failed — zone not found in target room', { zoneId: action.zoneId, targetRoom: resolvedRoomId, available: targetRoom.zones.map(z => `${z.id}=${z.label}`) }); return false }
-        }
-        moveItemToRoom(item.id, resolvedRoomId)
-        assignItemToZone(item.id, targetZoneId, resolvedRoomId)
+        if (!targetRoom || !targetZone) { console.error('Chat action failed — move_and_assign missing room or zone', { action, targetRoom: targetRoom?.id, targetZone: targetZone?.id }); return false }
+        moveItemToRoom(item.id, targetRoom.id)
+        assignItemToZone(item.id, targetZone.id, targetRoom.id)
         return true
       }
       case 'unassign':
