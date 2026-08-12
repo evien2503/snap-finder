@@ -2214,7 +2214,7 @@ export default function App() {
           <button onClick={() => { setShowChat(true); setTimeout(() => chatInputRef.current?.focus(), 300) }}
             className="fixed right-4 bottom-20 z-[9999] w-14 h-14 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 text-white border-none cursor-pointer shadow-[0_4px_20px_rgba(59,130,246,0.5)] hover:shadow-[0_6px_28px_rgba(59,130,246,0.7)] hover:scale-105 active:scale-95 transition-all flex items-center justify-center touch-manipulation animate-[fadeIn_0.3s_ease-out]"
             aria-label="Open AI chat assistant">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-6 h-6"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-6 h-6"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
             <div className="absolute -top-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full border-2 border-white dark:border-[#0f172a] animate-pulse" />
           </button>
         )}
