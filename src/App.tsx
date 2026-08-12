@@ -460,6 +460,7 @@ function RoomMapPanel({
   const dragStateRef = useRef<{ roomId: string; zoneId: string } | null>(null)
   const [dropZoneId, setDropZoneId] = useState<string | null>(null)
   const [assignItemId, setAssignItemId] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState(false)
   const itemDragRef = useRef<{ itemId: string; ghost: HTMLElement } | null>(null)
 
   /* ── Drag zones ── */
@@ -532,13 +533,21 @@ function RoomMapPanel({
             }`}>
             {isEditingMap ? '✅ Done' : '✏️ Edit Map'}
           </button>
+          <button type="button" onClick={() => setExpanded(v => !v)}
+            className={`px-2.5 py-1 text-xs font-medium border rounded-md cursor-pointer transition-colors touch-manipulation ${
+              expanded ? 'bg-blue-500 text-white border-blue-500 hover:bg-blue-600' : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700'
+            }`}>
+            {expanded ? '➖ Collapse' : '⛶ Expand Map'}
+          </button>
           {onClose && (
-            <button aria-label="Close map" onClick={onClose} className="bg-none border-none text-lg cursor-pointer text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 p-1 rounded transition-colors touch-manipulation">✕</button>
+            expanded
+              ? <button aria-label="Collapse map" onClick={() => setExpanded(false)} className="bg-none border-none text-lg cursor-pointer text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 p-1 rounded transition-colors touch-manipulation">➖</button>
+              : <button aria-label="Close map" onClick={onClose} className="bg-none border-none text-lg cursor-pointer text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 p-1 rounded transition-colors touch-manipulation">✕</button>
           )}
         </div>
       </div>
       <div className="p-4">
-        <div className="relative w-full aspect-[4/3] bg-gray-50 dark:bg-gray-900 border-2 border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden room-border">
+        <div className={`relative w-full ${expanded ? 'min-h-[50vh]' : 'aspect-[4/3]'} bg-gray-50 dark:bg-gray-900 border-2 border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden room-border`}>
           <div className="absolute inset-0 flex items-center justify-center text-xs text-gray-400 dark:text-gray-600 font-medium pointer-events-none whitespace-nowrap select-none">Drag zones to rearrange</div>
           {room.zones.map(zone => {
             const zoned = roomItems.filter(i => Math.abs(i.zoneX - zone.x) < 15 && Math.abs(i.zoneY - zone.y) < 15)
