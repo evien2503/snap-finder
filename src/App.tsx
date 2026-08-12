@@ -242,6 +242,10 @@ ACTIONS (use sparingly, only when the user explicitly asks to move/sort/organize
 - Never offer delete actions.
 - Always use the EXACT room IDs and zone IDs from the inventory context. Rooms: [room:ROOM_ID]. Zones: id="Label" pairs — copy the id directly (e.g. desk, nightstand_l, cabinet).
 - The action button commits the move — the item is NOT moved yet when you reply. Never say "has been moved", "successfully moved", or "relocated". Instead invite the user to click the button, e.g. "Click the button below to move your Melon to the Living Room."
+- Before offering any action, VERIFY that the target room AND zone actually exist in the inventory context above. Rooms are listed as [room:ROOM_ID], zones as id="Label" pairs.
+- If the user asks to move to a room or zone that does NOT exist (e.g. a "Cabinet" when that room has no Cabinet), do NOT emit an action tag. Instead tell them clearly: "There's no Cabinet in the Living Room. Available spots: Desk, Bookshelf, TV Stand, Coffee Table, Drawer." and offer the closest real alternative.
+- Distinguish source from destination: "from <Room>" means where the item currently is; "to <Room> <Zone>" means where it should go. If the user's stated source doesn't match the item's actual location, politely point that out instead of guessing.
+- If the request is ambiguous, ask a short clarifying question rather than emitting a wrong action.
 
 Example output:
 <reasoning>The user is asking about their keys. Inventory shows "House Keys" in Living Room on Coffee Table.</reasoning>
@@ -253,7 +257,11 @@ Example with move action:
 
 Example with combined move-and-place (when user specifies both room AND spot):
 <reasoning>User wants keys moved to Bedroom, Nightstand. "House Keys" [id:xyz789] is in Living Room. Bedroom is [room:room-bedroom] with zones nightstand_l="Nightstand L".</reasoning>
-<answer>Sure! Click the button below to move your keys to the Bedroom → Nightstand L: <action type="move_and_assign" item="xyz789" room="room-bedroom" zone="nightstand_l">Move to Bedroom → Nightstand L</action></answer>${inventoryContext}`
+<answer>Sure! Click the button below to move your keys to the Bedroom → Nightstand L: <action type="move_and_assign" item="xyz789" room="room-bedroom" zone="nightstand_l">Move to Bedroom → Nightstand L</action></answer>
+
+Example when the target room/zone does NOT exist (never emit an action tag):
+<reasoning>User wants the melon moved to a Cabinet in the Living Room, but the Living Room has no Cabinet — its zones are Desk, Bookshelf, TV Stand, Coffee Table, Drawer.</reasoning>
+<answer>There's no Cabinet in the Living Room. Available spots are the Desk, Bookshelf, or Coffee Table — want me to move it to one of those instead?</answer>${inventoryContext}`
 
   const messages = [
     { role: 'system', content: systemPrompt },
@@ -321,7 +329,10 @@ Example with combined move-and-place (when user specifies both room AND spot):
     const actions = parseActions(answer)
     const cleanReply = sanitizeChatText(answer)
 
-    return { reply: cleanReply || 'I found some information for you.', reasoning, suggestedItemIds, actions }
+    const fallback = actions.length > 0
+      ? 'Click the button below to complete the move.'
+      : 'I found some information for you.'
+    return { reply: cleanReply || fallback, reasoning, suggestedItemIds, actions }
   } catch {
     return { reply: 'Sorry, could not reach the AI service. Please try again.', suggestedItemIds: [], actions: [] }
   }
