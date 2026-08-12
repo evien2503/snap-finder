@@ -520,7 +520,12 @@ function RoomMapPanel({
 
   return (
     <>
-    <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-sm overflow-hidden">
+    {expanded && (
+      <div className="fixed inset-0 z-[85] bg-black/40 animate-[fadeIn_0.2s_ease-out]" onClick={() => setExpanded(false)} />
+    )}
+    <div className={`${expanded
+      ? 'fixed right-0 top-0 z-[90] w-1/2 h-full bg-white dark:bg-gray-800 border-l border-gray-200 dark:border-gray-700 shadow-2xl overflow-hidden animate-[slideRight_0.3s_cubic-bezier(0.4,0,0.2,1)]'
+      : 'bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-sm overflow-hidden'}`}>
       <div className="flex items-center justify-between px-4 py-3.5 border-b border-gray-200 dark:border-gray-700">
         <h3 className="text-sm font-semibold">🗺️ {room.name}</h3>
         <div className="flex items-center gap-2">
@@ -547,7 +552,7 @@ function RoomMapPanel({
         </div>
       </div>
       <div className="p-4">
-        <div className={`relative w-full ${expanded ? 'min-h-[50vh]' : 'aspect-[4/3]'} bg-gray-50 dark:bg-gray-900 border-2 border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden room-border`}>
+        <div className={`relative w-full ${expanded ? 'min-h-[calc(100vh-220px)]' : 'aspect-[4/3]'} bg-gray-50 dark:bg-gray-900 border-2 border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden room-border`}>
           <div className="absolute inset-0 flex items-center justify-center text-xs text-gray-400 dark:text-gray-600 font-medium pointer-events-none whitespace-nowrap select-none">Drag zones to rearrange</div>
           {room.zones.map(zone => {
             const zoned = roomItems.filter(i => Math.abs(i.zoneX - zone.x) < 15 && Math.abs(i.zoneY - zone.y) < 15)
