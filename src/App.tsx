@@ -241,6 +241,7 @@ ACTIONS (use sparingly, only when the user explicitly asks to move/sort/organize
 - Only offer actions for items that the user is currently discussing.
 - Never offer delete actions.
 - Always use the EXACT room IDs and zone IDs from the inventory context. Rooms: [room:ROOM_ID]. Zones: id="Label" pairs — copy the id directly (e.g. desk, nightstand_l, cabinet).
+- The action button commits the move — the item is NOT moved yet when you reply. Never say "has been moved", "successfully moved", or "relocated". Instead invite the user to click the button, e.g. "Click the button below to move your Melon to the Living Room."
 
 Example output:
 <reasoning>The user is asking about their keys. Inventory shows "House Keys" in Living Room on Coffee Table.</reasoning>
@@ -248,11 +249,11 @@ Example output:
 
 Example with move action:
 <reasoning>User wants the water bottle moved to Bedroom. "Water Bottle" [id:abc123] is currently in Living Room. Bedroom ID is room-bedroom.</reasoning>
-<answer>Got it! Your Water Bottle is currently in the Living Room. I can move it to the Bedroom for you: <action type="move_room" item="abc123" room="room-bedroom">Move to Bedroom</action></answer>
+<answer>Got it! Your Water Bottle is in the Living Room. Click the button below to move it to the Bedroom: <action type="move_room" item="abc123" room="room-bedroom">Move to Bedroom</action></answer>
 
 Example with combined move-and-place (when user specifies both room AND spot):
 <reasoning>User wants keys moved to Bedroom, Nightstand. "House Keys" [id:xyz789] is in Living Room. Bedroom is [room:room-bedroom] with zones nightstand_l="Nightstand L".</reasoning>
-<answer>Sure! Here's a one-click move for your keys: <action type="move_and_assign" item="xyz789" room="room-bedroom" zone="nightstand_l">Move to Bedroom → Nightstand L</action></answer>${inventoryContext}`
+<answer>Sure! Click the button below to move your keys to the Bedroom → Nightstand L: <action type="move_and_assign" item="xyz789" room="room-bedroom" zone="nightstand_l">Move to Bedroom → Nightstand L</action></answer>${inventoryContext}`
 
   const messages = [
     { role: 'system', content: systemPrompt },
