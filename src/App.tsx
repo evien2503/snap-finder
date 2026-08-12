@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import Fuse from 'fuse.js'
 
-/* â”€â”€ AI Vector Search â€” Cloudflare Worker â”€â”€ */
+/* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ AI Vector Search ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â Cloudflare Worker ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */
 const AI_SEARCH_URL = import.meta.env.VITE_AI_SEARCH_URL || 'http://localhost:8787'
 
 interface SearchResult {
@@ -30,7 +30,7 @@ async function aiVectorSearch(
   }
 }
 
-/* â”€â”€ Types â”€â”€ */
+/* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ Types ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */
 
 interface Zone { id: string; label: string; x: number; y: number }
 interface Room { id: string; name: string; zones: Zone[] }
@@ -45,7 +45,7 @@ interface ScannedItem {
   aiDetected: boolean  // true = AI recognized it, false = manual entry
 }
 
-/* â”€â”€ AI Vision Scan â€” Cloudflare Worker â”€â”€ */
+/* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ AI Vision Scan ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â Cloudflare Worker ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */
 const AI_SCAN_URL = import.meta.env.VITE_AI_SCAN_URL || import.meta.env.VITE_AI_SEARCH_URL || ''
 
 interface VisionResult {
@@ -64,7 +64,7 @@ interface MatchResult {
 }
 
 async function visionScan(base64Image: string, userId: string, roomName = 'Unknown', location = 'Scanned'): Promise<VisionResult | null> {
-  /* AI Gateway â€” mimo v2.5 vision scan */
+  /* AI Gateway ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â mimo v2.5 vision scan */
   if (!AI_GATEWAY_KEY) return null
   try {
     const res = await fetch(AI_GATEWAY_URL, {
@@ -85,7 +85,7 @@ async function visionScan(base64Image: string, userId: string, roomName = 'Unkno
     if (!res.ok) return null
     const data = await res.json()
     const msg = data.choices?.[0]?.message
-    /* mimo is a reasoning model â€” try final answer (content) first, then reasoning */
+    /* mimo is a reasoning model ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â try final answer (content) first, then reasoning */
     const candidate = (msg?.content || msg?.reasoning_content || '').toString()
     /* Strip markdown code fences, then extract first balanced JSON object */
     const cleaned = candidate.replace(/```[a-z]*\s*/gi, '').replace(/```/g, '')
@@ -132,7 +132,7 @@ async function fetchScanHistory(userId: string): Promise<any[]> {
   }
 }
 
-/* â”€â”€ R2 Photo Upload / Fetch â”€â”€ */
+/* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ R2 Photo Upload / Fetch ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */
 async function uploadPhoto(
   base64Image: string,
   userId: string,
@@ -141,7 +141,7 @@ async function uploadPhoto(
   roomLocation: string
 ): Promise<{ id: string; r2Key: string } | null> {
   try {
-    /* Convert base64 â†’ Blob â†’ File for FormData */
+    /* Convert base64 ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ Blob ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ File for FormData */
     const blobResp = await fetch(base64Image)
     const blob = await blobResp.blob()
     const file = new File([blob], `scan_${Date.now()}.jpg`, { type: 'image/jpeg' })
@@ -174,7 +174,7 @@ async function fetchPhotos(userId: string): Promise<{ categories: Record<string,
 interface ChatAction { type: 'move_room' | 'assign_zone' | 'unassign' | 'move_and_assign'; itemId: string; label: string; roomId?: string; zoneId?: string }
 interface ChatResponse { reply: string; reasoning?: string; suggestedItemIds: string[]; actions: ChatAction[] }
 
-/* â”€â”€ AI Chatbot â€” AI Gateway (OpenAI-compatible) â”€â”€ */
+/* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ AI Chatbot ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â AI Gateway (OpenAI-compatible) ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */
 const AI_GATEWAY_URL = 'https://ai-gateway.guidesify.com/v1/chat/completions'
 const AI_GATEWAY_KEY = import.meta.env.VITE_AI_KEY || ''
 
@@ -200,9 +200,9 @@ async function sendChat(message: string, items: Item[], rooms: Room[], history: 
     inventoryLines.push(`## ${room?.name ?? 'Unknown'} [room:${roomId}] (zones: ${zones})`)
     roomItems.forEach(item => {
       const lastChecked = Math.round((now - new Date(item.lastConfirmed).getTime()) / (24 * 60 * 60 * 1000))
-      const stale = lastChecked > 3 ? ` âš ï¸ last checked ${lastChecked}d ago` : ''
+      const stale = lastChecked > 3 ? ` ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â last checked ${lastChecked}d ago` : ''
       const unsorted = item.zoneX === -50 && item.zoneY === -50 ? ' [unsorted]' : ''
-      inventoryLines.push(`- ${item.name} (${item.category}) â€” ${item.location}${unsorted}${stale} [id:${item.id}]`)
+      inventoryLines.push(`- ${item.name} (${item.category}) ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ${item.location}${unsorted}${stale} [id:${item.id}]`)
     })
   })
 
@@ -229,23 +229,23 @@ RULES:
 - If an item is in the inventory, tell them EXACTLY where it is (room + location).
 - If not found, suggest where they might keep it based on the item category.
 - For category/room queries, list ALL matching items with locations.
-- Flag stale items (âš ï¸ unchecked >3 days) proactively.
+- Flag stale items (ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â unchecked >3 days) proactively.
 - Include item tracking IDs as [id:UUID] so the app can highlight them.
 
 ACTIONS (use sparingly, only when the user explicitly asks to move/sort/organize):
 - To offer moving an item to a room: <action type="move_room" item="ITEM_UUID" room="ROOM_ID">Move to RoomName</action>
 - To offer placing an item in a zone: <action type="assign_zone" item="ITEM_UUID" zone="ZONE_ID">Place on ZoneLabel</action>
 - To offer removing from map: <action type="unassign" item="ITEM_UUID">Remove from Map</action>
-- When the user asks to move an item to a specific spot in another room (e.g. "move keys to Bedroom, Desk"), use this combined action: <action type="move_and_assign" item="ITEM_UUID" room="ROOM_ID" zone="ZONE_ID">Move to RoomName â†’ ZoneLabel</action>
+- When the user asks to move an item to a specific spot in another room (e.g. "move keys to Bedroom, Desk"), use this combined action: <action type="move_and_assign" item="ITEM_UUID" room="ROOM_ID" zone="ZONE_ID">Move to RoomName ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ ZoneLabel</action>
 - Place action tags INSIDE the <answer> tag, after or between sentences.
 - Only offer actions for items that the user is currently discussing.
 - Never offer delete actions.
-- Always use the EXACT room IDs and zone IDs from the inventory context. Rooms: [room:ROOM_ID]. Zones: id="Label" pairs â€” copy the id directly (e.g. desk, nightstand_l, cabinet).
-- The action button commits the move â€” the item is NOT moved yet when you reply. Never say "has been moved", "successfully moved", or "relocated". Instead invite the user to click the button, e.g. "Click the button below to move your Melon to the Living Room."
+- Always use the EXACT room IDs and zone IDs from the inventory context. Rooms: [room:ROOM_ID]. Zones: id="Label" pairs ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â copy the id directly (e.g. desk, nightstand_l, cabinet).
+- The action button commits the move ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â the item is NOT moved yet when you reply. Never say "has been moved", "successfully moved", or "relocated". Instead invite the user to click the button, e.g. "Click the button below to move your Melon to the Living Room."
 
 Example output:
 <reasoning>The user is asking about their keys. Inventory shows "House Keys" in Living Room on Coffee Table.</reasoning>
-<answer>Your keys are in the **Living Room** on the Coffee Table. I'd check the bowl by the TV remote. ðŸ”‘</answer>
+<answer>Your keys are in the **Living Room** on the Coffee Table. I'd check the bowl by the TV remote. ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¹Ã…â€œ</answer>
 
 Example with move action:
 <reasoning>User wants the water bottle moved to Bedroom. "Water Bottle" [id:abc123] is currently in Living Room. Bedroom ID is room-bedroom.</reasoning>
@@ -253,7 +253,7 @@ Example with move action:
 
 Example with combined move-and-place (when user specifies both room AND spot):
 <reasoning>User wants keys moved to Bedroom, Nightstand. "House Keys" [id:xyz789] is in Living Room. Bedroom is [room:room-bedroom] with zones nightstand_l="Nightstand L".</reasoning>
-<answer>Sure! Click the button below to move your keys to the Bedroom â†’ Nightstand L: <action type="move_and_assign" item="xyz789" room="room-bedroom" zone="nightstand_l">Move to Bedroom â†’ Nightstand L</action></answer>${inventoryContext}`
+<answer>Sure! Click the button below to move your keys to the Bedroom ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ Nightstand L: <action type="move_and_assign" item="xyz789" room="room-bedroom" zone="nightstand_l">Move to Bedroom ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ Nightstand L</action></answer>${inventoryContext}`
 
   const messages = [
     { role: 'system', content: systemPrompt },
@@ -274,7 +274,7 @@ Example with combined move-and-place (when user specifies both room AND spot):
     const rawContent = data.choices?.[0]?.message?.content?.trim() || ''
     if (!rawContent) return { reply: 'AI returned an empty response. Please try again.', suggestedItemIds: [], actions: [] }
 
-    /* â”€â”€ Pure helpers (mirrored in test-parser.js) â”€â”€ */
+    /* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ Pure helpers (mirrored in test-parser.js) ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */
     /* Tolerant <answer> extraction: inner text if </answer> exists, else everything after <answer>, else raw */
     const extractAnswer = (raw: string): string => {
       const start = raw.indexOf('<answer>')
@@ -354,13 +354,13 @@ const SAMPLE_ITEMS: Array<{ name: string; location: string; category: string; ro
 ]
 
 const QUICK_CHIPS = [
-  { label: 'Keys', query: 'keys', icon: 'ðŸ”‘' },
-  { label: 'Passport', query: 'passport', icon: 'ðŸ›‚' },
-  { label: 'Laptop', query: 'laptop', icon: 'ðŸ’»' },
-  { label: 'Wallet', query: 'wallet', icon: 'ðŸ‘›' },
+  { label: 'Keys', query: 'keys', icon: 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¹Ã…â€œ' },
+  { label: 'Passport', query: 'passport', icon: 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂºÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡' },
+  { label: 'Laptop', query: 'laptop', icon: 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â»' },
+  { label: 'Wallet', query: 'wallet', icon: 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¹Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Âº' },
 ]
 
-/* â”€â”€ Utility Functions â”€â”€ */
+/* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ Utility Functions ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */
 
 function storageKey(user: string) { return `ilf_data_${user}` }
 
@@ -381,7 +381,7 @@ function formatDate(d: Date) { return d.toLocaleDateString('en-GB', { day: '2-di
 function shortDate(d: Date) { return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) }
 
 function timeAgo(iso: string): string {
-  if (!isValidDate(iso)) return 'â€”'
+  if (!isValidDate(iso)) return 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â'
   const diff = Date.now() - new Date(iso).getTime()
   const mins = Math.floor(diff / 60000)
   if (mins < 1) return 'Just now'
@@ -403,32 +403,32 @@ function getConfidencePercent(iso: string): number {
 }
 
 function pinColor(cat: string) {
-  const colors: Record<string, string> = { Documents: '#4f46e5', Electronics: '#059669', Keys: '#d97706', Warranties: '#7c3aed', Valuables: '#be185d' }
+  const colors: Record<string, string> = { Documents: '#3b82f6', Electronics: '#059669', Keys: '#d97706', Warranties: '#2563eb', Valuables: '#be185d' }
   return colors[cat] || '#6b7280'
 }
 
 function pinIcon(name: string) {
   const l = name.toLowerCase()
-  if (l.includes('passport') || l.includes('document')) return 'ðŸ›‚'
-  if (l.includes('key')) return 'ðŸ”‘'
-  if (l.includes('laptop') || l.includes('phone') || l.includes('charger') || l.includes('computer')) return 'ðŸ’»'
-  if (l.includes('warranty') || l.includes('receipt')) return 'ðŸ“„'
-  if (l.includes('wallet') || l.includes('cash') || l.includes('money')) return 'ðŸ‘›'
-  return 'ðŸ“¦'
+  if (l.includes('passport') || l.includes('document')) return 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂºÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡'
+  if (l.includes('key')) return 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¹Ã…â€œ'
+  if (l.includes('laptop') || l.includes('phone') || l.includes('charger') || l.includes('computer')) return 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â»'
+  if (l.includes('warranty') || l.includes('receipt')) return 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾'
+  if (l.includes('wallet') || l.includes('cash') || l.includes('money')) return 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¹Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Âº'
+  return 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦'
 }
 
 function categoryIcon(cat: string) {
   switch (cat) {
-    case 'Documents': return 'ðŸ“„'
-    case 'Electronics': return 'ðŸ’»'
-    case 'Keys': return 'ðŸ”‘'
-    case 'Warranties': return 'ðŸ“‹'
-    case 'Valuables': return 'ðŸ’Ž'
-    default: return 'ðŸ“¦'
+    case 'Documents': return 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾'
+    case 'Electronics': return 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â»'
+    case 'Keys': return 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¹Ã…â€œ'
+    case 'Warranties': return 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¹'
+    case 'Valuables': return 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â½'
+    default: return 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦'
   }
 }
 
-/* â”€â”€ Room Map Panel â”€â”€ */
+/* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ Room Map Panel ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */
 
 function RoomMapPanel({
   room, rooms, currentRoomId, roomItems, selectedZone, glowingItemId, glowingZoneId, isEditingMap, onClose,
@@ -451,7 +451,7 @@ function RoomMapPanel({
   const [assignItemId, setAssignItemId] = useState<string | null>(null)
   const itemDragRef = useRef<{ itemId: string; ghost: HTMLElement } | null>(null)
 
-  /* â”€â”€ Drag zones â”€â”€ */
+  /* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ Drag zones ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */
   function startDrag(zoneEl: HTMLElement) {
     if (zoneEl.closest('.map-pin, .zone-delete')) return
     const roomId = zoneEl.dataset.roomId; const zoneId = zoneEl.dataset.zone
@@ -483,7 +483,7 @@ function RoomMapPanel({
     document.addEventListener('touchmove', onTouchMove, { passive: true }); document.addEventListener('touchend', onTouchEnd)
   }
 
-  /* â”€â”€ Touch-drag pins â†’ unsorted tray (unassign) â”€â”€ */
+  /* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ Touch-drag pins ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ unsorted tray (unassign) ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */
   function startPinTouchDrag(ev: React.TouchEvent, itemId: string) {
     const touch = ev.touches[0]; if (!touch) return
     const pinEl = ev.currentTarget as HTMLElement
@@ -510,7 +510,7 @@ function RoomMapPanel({
     <>
     <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-sm overflow-hidden">
       <div className="flex items-center justify-between px-4 py-3.5 border-b border-gray-200 dark:border-gray-700">
-        <h3 className="text-sm font-semibold">ðŸ—ºï¸ {room.name}</h3>
+        <h3 className="text-sm font-semibold">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂºÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â {room.name}</h3>
         <div className="flex items-center gap-2">
           {selectedZone && (
             <button type="button" onClick={() => onSelectZone(null)} className="px-2.5 py-1 text-xs font-medium border border-gray-200 dark:border-gray-600 rounded-md cursor-pointer bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors touch-manipulation">Clear Filter</button>
@@ -519,10 +519,10 @@ function RoomMapPanel({
             className={`px-2.5 py-1 text-xs font-medium border rounded-md cursor-pointer transition-colors touch-manipulation ${
               isEditingMap ? 'bg-blue-500 text-white border-blue-500 hover:bg-blue-600' : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700'
             }`}>
-            {isEditingMap ? 'âœ… Done' : 'âœï¸ Edit Map'}
+            {isEditingMap ? 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ Done' : 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â Edit Map'}
           </button>
           {onClose && (
-            <button aria-label="Close map" onClick={onClose} className="bg-none border-none text-lg cursor-pointer text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 p-1 rounded transition-colors touch-manipulation">âœ•</button>
+            <button aria-label="Close map" onClick={onClose} className="bg-none border-none text-lg cursor-pointer text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 p-1 rounded transition-colors touch-manipulation">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢</button>
           )}
         </div>
       </div>
@@ -538,7 +538,7 @@ function RoomMapPanel({
               <div key={zone.id}
                 className={`drag-zone absolute -translate-x-1/2 -translate-y-1/2 px-2.5 py-1.5 rounded-lg cursor-pointer transition-all select-none min-w-[60px] ${
                   selectedZone === zone.id ? 'bg-blue-500/20 border-blue-500' : 'bg-blue-500/10 border-blue-500/30'
-                } ${glowingZoneId === zone.id ? '!border-emerald-400 !shadow-[0_0_15px_rgba(16,185,129,0.5),0_0_30px_rgba(16,185,129,0.2)] !bg-emerald-500/20 !z-10' : ''} ${hasGlowing ? '!border-blue-500 !shadow-[0_0_0_3px_rgba(99,102,241,0.2),0_0_20px_rgba(99,102,241,0.15)] animate-pulse' : ''} ${isEditingMap ? 'ring-2 ring-blue-400/60' : ''} ${dropZoneId === zone.id ? 'ring-2 ring-emerald-400 bg-emerald-500/10 !z-10' : ''}`}
+                } ${glowingZoneId === zone.id ? '!border-emerald-400 !shadow-[0_0_15px_rgba(16,185,129,0.5),0_0_30px_rgba(16,185,129,0.2)] !bg-emerald-500/20 !z-10' : ''} ${hasGlowing ? '!border-blue-500 !shadow-[0_0_0_3px_rgba(59,130,246,0.2),0_0_20px_rgba(59,130,246,0.15)] animate-pulse' : ''} ${isEditingMap ? 'ring-2 ring-blue-400/60' : ''} ${dropZoneId === zone.id ? 'ring-2 ring-emerald-400 bg-emerald-500/10 !z-10' : ''}`}
                 data-zone={zone.id} data-room-id={room.id}
                 style={{ left: `${zone.x}%`, top: `${zone.y}%`, border: '1px dashed', touchAction: 'none', ...(zoneColor ? { borderColor: zoneColor, background: `${zoneColor}15` } : {}) }}
                 onMouseDown={e => { if (!(e.target as HTMLElement).closest('.map-pin, .zone-delete')) startDrag(e.currentTarget) }}
@@ -548,16 +548,16 @@ function RoomMapPanel({
                 onDrop={e => { e.preventDefault(); const id = e.dataTransfer.getData('text/plain'); if (id) onAssignItem(id, zone.id); setDropZoneId(null) }}
                 onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropZoneId(null) }}>
                 {isEditingMap ? (
-                  <span className="inline-flex items-center justify-center w-11 h-11 -m-3 text-xs text-gray-500 dark:text-gray-400 cursor-grab active:cursor-grabbing select-none">â ¿</span>
+                  <span className="inline-flex items-center justify-center w-11 h-11 -m-3 text-xs text-gray-500 dark:text-gray-400 cursor-grab active:cursor-grabbing select-none">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¿</span>
                 ) : (
-                  <span className="block text-center text-xs text-gray-500 dark:text-gray-400 opacity-40 cursor-grab select-none mb-0.5">â ¿</span>
+                  <span className="block text-center text-xs text-gray-500 dark:text-gray-400 opacity-40 cursor-grab select-none mb-0.5">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¿</span>
                 )}
                 <span className="block text-[11px] text-gray-500 dark:text-gray-400 font-semibold text-center pointer-events-none select-none">{zone.label}</span>
                 {zoned.length > 0 && (
                   <span className="absolute -top-1.5 -right-1.5 w-4.5 h-4.5 rounded-full bg-blue-500 text-white text-[10px] font-bold flex items-center justify-center pointer-events-none select-none">{zoned.length}</span>
                 )}
                 {isEditingMap && (
-                  <button type="button" aria-label={`Delete zone ${zone.label}`} className="zone-delete absolute -top-2 -right-2 w-11 h-11 flex items-center justify-center rounded-full bg-white dark:bg-gray-700 border border-red-300 dark:border-red-900 text-red-500 text-sm shadow-md cursor-pointer z-10" onClick={(e) => { e.stopPropagation(); if (confirm(`Delete "${zone.label}"? Items near it will become unsorted.`)) onDeleteZone(room.id, zone.id) }}>ðŸ—‘ï¸</button>
+                  <button type="button" aria-label={`Delete zone ${zone.label}`} className="zone-delete absolute -top-2 -right-2 w-11 h-11 flex items-center justify-center rounded-full bg-white dark:bg-gray-700 border border-red-300 dark:border-red-900 text-red-500 text-sm shadow-md cursor-pointer z-10" onClick={(e) => { e.stopPropagation(); if (confirm(`Delete "${zone.label}"? Items near it will become unsorted.`)) onDeleteZone(room.id, zone.id) }}>ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¹Ã…â€œÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â</button>
                 )}
                 {zoned.map(i => (
                   <div key={i.id}
@@ -588,14 +588,14 @@ function RoomMapPanel({
             <div data-unsorted-tray className="flex items-center gap-2 p-2.5 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 flex-wrap"
               onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move' }}
               onDrop={e => { e.preventDefault(); const id = e.dataTransfer.getData('text/plain'); if (id) onUnassignItem(id) }}>
-              <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 whitespace-nowrap">ðŸ“¦ Unsorted / Off-Map Items</span>
+              <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 whitespace-nowrap">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ Unsorted / Off-Map Items</span>
               {unsorted.map(i => (
                 <span key={i.id} data-tray-pill={i.id} draggable="true"
                   onDragStart={e => { e.dataTransfer.setData('text/plain', i.id); e.dataTransfer.effectAllowed = 'move' }}
                   onDragEnd={() => setDropZoneId(null)}
                   onClick={() => setAssignItemId(assignItemId === i.id ? null : i.id)}
                   className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-full text-gray-700 dark:text-gray-300 whitespace-nowrap cursor-pointer hover:border-blue-500 transition-colors ${
-                    glowingItemId === i.id ? '!border-blue-500 !shadow-[0_0_0_2px_rgba(99,102,241,0.2)]' : ''
+                    glowingItemId === i.id ? '!border-blue-500 !shadow-[0_0_0_2px_rgba(59,130,246,0.2)]' : ''
                   }`}>
                   {pinIcon(i.name)} {i.name}
                 </span>
@@ -618,7 +618,7 @@ function RoomMapPanel({
             <div className="border-t my-1" />
             <div className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 px-3 py-1">Move to Room:</div>
             {rooms.filter(r => r.id !== currentRoomId).map(r => (
-              <button key={r.id} type="button" onClick={() => { onMoveToRoom(assignItemId, r.id); setAssignItemId(null) }} className="block w-full text-left px-3 py-2 text-xs hover:bg-emerald-50 dark:hover:bg-emerald-900/30 rounded-md">ðŸ  {r.name}</button>
+              <button key={r.id} type="button" onClick={() => { onMoveToRoom(assignItemId, r.id); setAssignItemId(null) }} className="block w-full text-left px-3 py-2 text-xs hover:bg-emerald-50 dark:hover:bg-emerald-900/30 rounded-md">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â  {r.name}</button>
             ))}
           </div>
         </>
@@ -628,14 +628,14 @@ function RoomMapPanel({
   )
 }
 
-/* â”€â”€ React App â”€â”€ */
+/* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ React App ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */
 
 export default function App() {
-  /* â”€â”€ Dark mode (eager: read before first paint to prevent flash) â”€â”€ */
+  /* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ Dark mode (eager: read before first paint to prevent flash) ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */
   const initialDark = typeof window !== 'undefined' ? localStorage.getItem('ilf_dark') === 'true' : false
   if (typeof document !== 'undefined') document.documentElement.classList.toggle('dark', initialDark)
 
-  /* â”€â”€ State â”€â”€ */
+  /* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ State ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */
   const [page, setPage] = useState<'auth' | 'dashboard'>('auth')
   const [user, setUser] = useState<User | null>(null)
   const [rooms, setRooms] = useState<Room[]>([])
@@ -720,7 +720,7 @@ export default function App() {
     return i.roomId === currentRoomId && isValidDate(i.lastConfirmed) && new Date(i.lastConfirmed).getTime() < cutoff
   })
 
-  /* â”€â”€ Sync dark class on toggle â”€â”€ */
+  /* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ Sync dark class on toggle ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */
   useEffect(() => {
     document.documentElement.classList.toggle('dark', darkMode)
   }, [darkMode])
@@ -732,7 +732,7 @@ export default function App() {
     document.documentElement.classList.toggle('dark', next)
   }
 
-  /* â”€â”€ Data persistence â”€â”€ */
+  /* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ Data persistence ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */
   function save() {
     if (!user) return
     localStorage.setItem(storageKey(user.email), JSON.stringify({ rooms, items, currentRoomId, scannedItems }))
@@ -796,7 +796,7 @@ export default function App() {
     }
   }
 
-  /* â”€â”€ Auth â”€â”€ */
+  /* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ Auth ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */
   function signUp() {
     const users = getUsers()
     if (users.find(u => u.email === authEmail)) { setAuthError('Email already registered'); return }
@@ -849,7 +849,7 @@ export default function App() {
     setUser(null); setItems([]); setRooms([]); setScannedItems([]); setAuthError(''); setShowOnboarding(false); setPage('auth')
   }
 
-  /* â”€â”€ Room & Item CRUD â”€â”€ */
+  /* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ Room & Item CRUD ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */
   function switchRoom(id: string) { setCurrentRoomId(id); setSelectedZone(null); setGlowingItemId(null) }
 
   function addRoom(name: string) {
@@ -898,13 +898,13 @@ export default function App() {
 
   function deleteItem(id: string) { setItems(prev => prev.filter(i => i.id !== id)) }
 
-  /* â”€â”€ Kiosk-Style Intelligent Search (Fuse + AI Vector) â”€â”€ */
+  /* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ Kiosk-Style Intelligent Search (Fuse + AI Vector) ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */
   function handleSearch(q: string) {
     if (!q) {
       setGlowingItemId(null); setGlowingZoneId(null); setGlowingRoomIds([]); setAiResults([]); setSearchFocused(true); return
     }
 
-    // 1. Fuse fuzzy search â€” instant local results
+    // 1. Fuse fuzzy search ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â instant local results
     const fuseResults = fuse.search(q)
     const matched = fuseResults.slice(0, 6).map(r => r.item)
     setAiResults(matched.map(i => ({
@@ -927,7 +927,7 @@ export default function App() {
     if (searchPulseTimer.current) clearTimeout(searchPulseTimer.current)
     searchPulseTimer.current = setTimeout(() => { setGlowingItemId(null); setGlowingZoneId(null) }, 6000)
 
-    // 2. AI vector search (debounced) â€” semantic synonyms & typos
+    // 2. AI vector search (debounced) ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â semantic synonyms & typos
     if (semanticTimer.current) clearTimeout(semanticTimer.current)
     semanticTimer.current = setTimeout(async () => {
       if (!q.trim()) return
@@ -980,7 +980,7 @@ export default function App() {
     searchPulseTimer.current = setTimeout(() => { setGlowingItemId(null); setGlowingZoneId(null) }, 5000)
   }
 
-  /* â”€â”€ Voice Search â”€â”€ */
+  /* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ Voice Search ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */
   function startVoiceSearch() {
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
     if (!SR) { alert('Voice search needs Chrome/Edge.'); return }
@@ -996,7 +996,7 @@ export default function App() {
     r.start()
   }
 
-  /* â”€â”€ AI Vision Scanner â”€â”€ */
+  /* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ AI Vision Scanner ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */
 
   function openScanCamera() {
     setScanMode('camera'); setCapturedImage(null); setScanResult(null)
@@ -1052,12 +1052,12 @@ export default function App() {
             setScanResult(prev => prev ? {
               ...prev,
               name: `${prev.name} (matches: ${match.matchedItem})`,
-              description: `${prev.description} â€” ðŸ”„ Previously scanned item detected!`,
+              description: `${prev.description} ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ Previously scanned item detected!`,
             } : prev)
           }
         })
       } else {
-        setScanResult({ name: '', category: 'Other', description: 'âš ï¸ Scan failed â€” AI service unavailable. Enter details below', confidence: 'low', features: [] })
+        setScanResult({ name: '', category: 'Other', description: 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â Scan failed ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â AI service unavailable. Enter details below', confidence: 'low', features: [] })
         setScanMode('result')
       }
     })
@@ -1067,7 +1067,7 @@ export default function App() {
     if (!capturedImage) return
     const newItemId = crypto.randomUUID()
     const mainItemId = crypto.randomUUID()
-    /* Fire-and-forget R2 upload â€” never blocks camera close */
+    /* Fire-and-forget R2 upload ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â never blocks camera close */
     uploadPhoto(capturedImage, userRef.current, name || 'Unknown Item', category, 'Scanned').then(upload => {
       if (upload) {
         setScannedItems(prev => prev.map(p => p.id === newItemId ? { ...p, imageUrl: `${AI_SCAN_URL}/api/photos/${upload.r2Key}`, imageData: undefined } : p))
@@ -1110,11 +1110,11 @@ export default function App() {
 
   function assignPhotoToItem(photoId: string, r2Key: string | undefined, imageData: string | undefined, targetItemId: string) {
     if (r2Key) {
-      /* Already has R2 key â€” assign directly */
+      /* Already has R2 key ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â assign directly */
       setItems(prev => prev.map(i => i.id === targetItemId ? { ...i, imageKey: r2Key } : i))
       setScannedItems(prev => prev.map(s => s.id === photoId ? { ...s, imageUrl: `${AI_SCAN_URL}/api/photos/${r2Key}`, imageData: undefined } : s))
     } else if (imageData) {
-      /* Legacy base64 â€” upload to R2 first, then assign */
+      /* Legacy base64 ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â upload to R2 first, then assign */
       uploadPhoto(imageData, userRef.current, 'Assigned Photo', 'Other', 'Scanned').then(upload => {
         if (upload) {
           setItems(prev => prev.map(i => i.id === targetItemId ? { ...i, imageKey: upload.r2Key } : i))
@@ -1127,10 +1127,10 @@ export default function App() {
 
   function attachPhotoToItem(itemId: string, r2Key?: string, imageData?: string) {
     if (r2Key) {
-      /* Already has R2 key â€” assign directly */
+      /* Already has R2 key ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â assign directly */
       setItems(prev => prev.map(i => i.id === itemId ? { ...i, imageKey: r2Key } : i))
     } else if (imageData) {
-      /* Legacy base64 â€” upload to R2 first, then assign */
+      /* Legacy base64 ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â upload to R2 first, then assign */
       uploadPhoto(imageData, userRef.current, 'Assigned Photo', 'Other', 'Scanned').then(upload => {
         if (upload) setItems(prev => prev.map(i => i.id === itemId ? { ...i, imageKey: upload.r2Key } : i))
       })
@@ -1180,17 +1180,17 @@ export default function App() {
     })
   }
 
-  /* â”€â”€ Chatbot â”€â”€ */
+  /* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ Chatbot ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */
   function executeAction(action: ChatAction) {
     let item = items.find(i => i.id === action.itemId)
     /* Fallback: match by name when AI can't reliably copy UUIDs */
     if (!item) item = items.find(i => i.name.toLowerCase().trim() === action.itemId.toLowerCase().trim())
     if (!item) {
-      console.error('Chat action failed â€” item not found', { actionId: action.itemId, type: action.type, available: items.map(i => `${i.id}=${i.name}`) })
+      console.error('Chat action failed ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â item not found', { actionId: action.itemId, type: action.type, available: items.map(i => `${i.id}=${i.name}`) })
       return false
     }
 
-    /* Tolerant resolver â€” AI may emit names, slugs, or combined "Room Zone" strings */
+    /* Tolerant resolver ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â AI may emit names, slugs, or combined "Room Zone" strings */
     const norm = (s: string) => s.toLowerCase().trim()
     const findRoom = (ref: string | undefined): Room | null => {
       if (!ref) return null
@@ -1199,7 +1199,7 @@ export default function App() {
       const exact = [...rooms].sort((a, b) => b.name.length - a.name.length)
         .find(r => r.id === ref || norm(r.name) === v)
       if (exact) return exact
-      /* 3. room name contained in the value (e.g. "Living Room Desk" â†’ "Living Room") */
+      /* 3. room name contained in the value (e.g. "Living Room Desk" ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ "Living Room") */
       const contained = [...rooms].sort((a, b) => b.name.length - a.name.length)
         .find(r => v.includes(norm(r.name)))
       if (contained) return contained
@@ -1220,18 +1220,18 @@ export default function App() {
 
     switch (action.type) {
       case 'move_room':
-        if (!targetRoom) { console.error('Chat action failed â€” room not found', { roomId: action.roomId, available: rooms.map(r => `${r.id}=${r.name}`) }); return false }
+        if (!targetRoom) { console.error('Chat action failed ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â room not found', { roomId: action.roomId, available: rooms.map(r => `${r.id}=${r.name}`) }); return false }
         moveItemToRoom(item.id, targetRoom.id); return true
       case 'assign_zone': {
         /* Zone lives in the current room (or target room if supplied) */
         const zoneRoom = targetRoom || rooms.find(r => r.id === currentRoomId) || null
         const z = findZone(zoneRoom, action.zoneId)
-        if (!z) { console.error('Chat action failed â€” zone not found', { zoneId: action.zoneId, available: zoneRoom?.zones.map(z => `${z.id}=${z.label}`) }); return false }
+        if (!z) { console.error('Chat action failed ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â zone not found', { zoneId: action.zoneId, available: zoneRoom?.zones.map(z => `${z.id}=${z.label}`) }); return false }
         assignItemToZone(item.id, z.id, zoneRoom?.id)
         return true
       }
       case 'move_and_assign': {
-        if (!targetRoom || !targetZone) { console.error('Chat action failed â€” move_and_assign missing room or zone', { action, targetRoom: targetRoom?.id, targetZone: targetZone?.id }); return false }
+        if (!targetRoom || !targetZone) { console.error('Chat action failed ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â move_and_assign missing room or zone', { action, targetRoom: targetRoom?.id, targetZone: targetZone?.id }); return false }
         moveItemToRoom(item.id, targetRoom.id)
         assignItemToZone(item.id, targetZone.id, targetRoom.id)
         return true
@@ -1272,7 +1272,7 @@ export default function App() {
       .finally(() => setChatLoading(false))
   }
 
-  /* â”€â”€ Prompt overlay â”€â”€ */
+  /* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ Prompt overlay ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */
   function showInlinePrompt(placeholder: string): Promise<string | null> {
     return new Promise(resolve => {
       setPromptPlaceholder(placeholder); setShowPrompt(true)
@@ -1280,7 +1280,7 @@ export default function App() {
     })
   }
 
-  /* â”€â”€ Cleanup on unmount â”€â”€ */
+  /* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ Cleanup on unmount ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */
   useEffect(() => {
     return () => {
       if (recognitionRef.current) try { recognitionRef.current.abort() } catch {}
@@ -1290,14 +1290,14 @@ export default function App() {
     }
   }, [])
 
-  /* â”€â”€ Render â”€â”€ */
+  /* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ Render ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */
   if (page === 'auth') {
     return (
-      <div className="min-h-screen flex items-center justify-center p-5 bg-gradient-to-br from-[#6366f1] via-[#8b5cf6] to-[#a78bfa] relative overflow-hidden">
+      <div className="min-h-screen flex items-center justify-center p-5 bg-gradient-to-br from-[#1e3a8a] via-[#2563eb] to-[#3b82f6] relative overflow-hidden">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_20%_50%,rgba(255,255,255,0.12)_0%,transparent_60%),radial-gradient(ellipse_at_80%_50%,rgba(255,255,255,0.08)_0%,transparent_60%)]" />
         <div className="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl p-10 w-full max-w-md animate-[fadeInUp_0.4s_ease-out]">
           <div className="text-center mb-8">
-            <h1 className="text-2xl font-bold bg-gradient-to-r from-[#6366f1] to-[#8b5cf6] bg-clip-text text-transparent mb-1">ðŸ“ Item Location Finder</h1>
+            <h1 className="text-2xl font-bold bg-gradient-to-r from-[#2563eb] to-[#60a5fa] bg-clip-text text-transparent mb-1">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â Item Location Finder</h1>
             <p className="text-gray-500 dark:text-gray-400 text-sm">Never lose track of your important items</p>
           </div>
           <form onSubmit={e => { e.preventDefault(); isSignUp ? signUp() : signIn() }} className="flex flex-col gap-4">
@@ -1335,7 +1335,7 @@ export default function App() {
       return (
         <div className="fixed inset-0 z-[9999] flex flex-col items-center justify-center bg-[rgba(15,23,42,0.95)] text-white p-5 font-sans">
           <div className="flex flex-col items-center text-center max-w-md w-full">
-            <h2 className="mb-2 text-2xl">ðŸ“¸ Quick Room Setup</h2>
+            <h2 className="mb-2 text-2xl">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ Quick Room Setup</h2>
             <p className="text-slate-400 text-sm mb-5">Point your camera at your space for 3 seconds to find your essentials.</p>
             <div className="relative w-full aspect-[4/3] bg-slate-800 rounded-xl overflow-hidden border-2 border-blue-500">
               <video id="onboarding-video" autoPlay playsInline muted className="w-full h-full object-cover scale-x-[-1]" />
@@ -1359,12 +1359,12 @@ export default function App() {
     return (
       <div className="fixed inset-0 z-[9999] flex flex-col items-center justify-center bg-[rgba(15,23,42,0.95)] text-white p-5 font-sans">
         <div className="flex flex-col items-center text-center max-w-md w-full">
-          <h2 className="mb-2 text-2xl">ðŸŽ‰ Essentials Detected!</h2>
+          <h2 className="mb-2 text-2xl">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â½ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â° Essentials Detected!</h2>
           <p className="text-slate-400 text-sm mb-6">We successfully locked down your highest priority items. Secure them now to unlock your dashboard layout.</p>
           <div className="bg-slate-800 rounded-xl w-full p-4 text-left mb-6 border border-slate-700">
-            <div className="flex items-center mb-3 text-green-400"><span className="mr-2">âœ…</span> ðŸªª Passport <span className="ml-auto text-xs text-slate-500">Detected</span></div>
-            <div className="flex items-center mb-3 text-green-400"><span className="mr-2">âœ…</span> ðŸ’» Laptop <span className="ml-auto text-xs text-slate-500">Detected</span></div>
-              <div className="flex items-center text-green-400"><span className="mr-2">âœ…</span> ðŸ”‘ House Keys <span className="ml-auto text-xs text-slate-500">Detected</span></div>
+            <div className="flex items-center mb-3 text-green-400"><span className="mr-2">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦</span> ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂªÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Âª Passport <span className="ml-auto text-xs text-slate-500">Detected</span></div>
+            <div className="flex items-center mb-3 text-green-400"><span className="mr-2">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦</span> ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â» Laptop <span className="ml-auto text-xs text-slate-500">Detected</span></div>
+              <div className="flex items-center text-green-400"><span className="mr-2">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦</span> ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¹Ã…â€œ House Keys <span className="ml-auto text-xs text-slate-500">Detected</span></div>
           </div>
           <button onClick={() => { setShowOnboarding(false); localStorage.setItem('ilf_onboarded', '1'); save() }} className="w-full bg-green-500 hover:bg-green-600 text-white border-none py-3.5 font-bold rounded-lg cursor-pointer text-base transition-colors touch-manipulation">Pin My Top 3 Essentials &amp; Start</button>
         </div>
@@ -1376,21 +1376,21 @@ export default function App() {
     <div className="min-h-screen">
       <div className="bg-gray-50 dark:bg-[#0f172a] text-gray-900 dark:text-gray-100 transition-colors min-h-screen" style={{ fontFamily: '-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif' }}>
         <div className="max-w-[1200px] mx-auto p-5 max-md:p-3 max-md:pb-20 animate-[fadeIn_0.3s_ease-out]">
-          {/* â”€â”€ Header â”€â”€ */}
+          {/* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ Header ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */}
           <header className="mb-5">
             <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
-              <h1 className="text-xl font-bold bg-gradient-to-r from-blue-500 to-blue-500 bg-clip-text text-transparent max-md:text-base">ðŸ“ Item Location Finder</h1>
+              <h1 className="text-xl font-bold bg-gradient-to-r from-blue-600 to-sky-400 bg-clip-text text-transparent max-md:text-base">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â Item Location Finder</h1>
               <div className="flex items-center gap-1.5 flex-wrap">
                 <span className="text-xs text-gray-500 dark:text-gray-400 bg-white dark:bg-gray-800 px-3 py-1.5 rounded-md border border-gray-200 dark:border-gray-700 max-md:hidden">{user?.email}</span>
-                <button aria-label="Open map" onClick={() => setShowMobileMap(true)} className="md:hidden w-9 h-9 flex items-center justify-center bg-transparent border border-gray-200 dark:border-gray-700 rounded-lg text-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors touch-manipulation">ðŸ—ºï¸</button>
-                <button aria-label="Toggle dark mode" onClick={toggleDark} className="w-9 h-9 flex items-center justify-center bg-transparent border border-gray-200 dark:border-gray-700 rounded-lg text-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors touch-manipulation" title="Toggle dark mode">{darkMode ? 'â˜€ï¸' : 'ðŸŒ™'}</button>
+                <button aria-label="Open map" onClick={() => setShowMobileMap(true)} className="md:hidden w-9 h-9 flex items-center justify-center bg-transparent border border-gray-200 dark:border-gray-700 rounded-lg text-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors touch-manipulation">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂºÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â</button>
+                <button aria-label="Toggle dark mode" onClick={toggleDark} className="w-9 h-9 flex items-center justify-center bg-transparent border border-gray-200 dark:border-gray-700 rounded-lg text-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors touch-manipulation" title="Toggle dark mode">{darkMode ? 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¹Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â' : 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢'}</button>
                 <button onClick={() => { setShowScannedGallery(true); syncHistory() }} className="relative flex items-center gap-1 px-3 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg text-sm cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors touch-manipulation">
-                  ðŸ–¼ï¸
+                  ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¼ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â
                   {scannedItems.length > 0 && (
                     <span className="absolute -top-1.5 -right-1.5 w-4.5 h-4.5 rounded-full bg-blue-500 text-white text-[10px] font-bold flex items-center justify-center">{scannedItems.length}</span>
                   )}
                 </button>
-                <button onClick={() => { setShowCameraScan(true); openScanCamera() }} className="hidden md:inline-flex px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-sm font-semibold cursor-pointer transition-all hover:scale-103 hover:shadow-md active:scale-100 touch-manipulation">ðŸ“¸ Scan Item</button>
+                <button onClick={() => { setShowCameraScan(true); openScanCamera() }} className="hidden md:inline-flex px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-sm font-semibold cursor-pointer transition-all hover:scale-103 hover:shadow-md active:scale-100 touch-manipulation">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ Scan Item</button>
                 <button onClick={() => { setShowAddModal(true); setEditingItem(null) }} className="px-3 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg text-sm font-semibold cursor-pointer transition-all hover:-translate-y-0.5 hover:shadow-md active:translate-y-0 touch-manipulation">+ Add Item</button>
                 <button onClick={signOut} className="px-3 py-2 bg-transparent text-gray-500 dark:text-gray-400 border border-gray-200 dark:border-gray-700 rounded-lg text-sm cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-700 dark:hover:text-gray-200 transition-colors touch-manipulation">Sign Out</button>
               </div>
@@ -1399,17 +1399,17 @@ export default function App() {
             {/* Stale alerts */}
             {stale.length > 0 && (
               <div className="flex items-start gap-2.5 p-3.5 bg-amber-50 dark:bg-[#451a03] border border-amber-200 dark:border-[#78350f] rounded-xl text-sm text-amber-800 dark:text-amber-200 mb-3 animate-[slideUp_0.3s_ease-out]">
-                <span className="text-base mt-0.5">ðŸ””</span>
+                <span className="text-base mt-0.5">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â</span>
                 <div className="flex-1 flex flex-col gap-2">
                   <span className="font-semibold">{stale.length} item{stale.length > 1 ? 's' : ''} haven't been seen in 3+ days.</span>
                   {stale.filter(i => !dismissAlerts.includes(i.id)).slice(0, 3).map(i => (
                     <div key={i.id} className="flex flex-col gap-1 p-2 bg-white/50 dark:bg-black/20 rounded-md text-xs border-l-3 border-amber-500">
-                      <span>{pinIcon(i.name)} <strong>{i.name}</strong> â€” last seen {timeAgo(i.lastConfirmed)} in {i.location}</span>
+                      <span>{pinIcon(i.name)} <strong>{i.name}</strong> ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â last seen {timeAgo(i.lastConfirmed)} in {i.location}</span>
                       <div className="flex gap-1.5 mt-0.5">
                         <button onClick={() => { setItems(prev => prev.map(it => it.id === i.id ? { ...it, lastConfirmed: new Date().toISOString() } : it)) }}
-                          className="px-2 py-0.5 text-xs font-medium rounded border bg-emerald-500 text-white border-emerald-600 cursor-pointer hover:bg-emerald-600 transition-colors touch-manipulation">âœ“ Still there</button>
+                          className="px-2 py-0.5 text-xs font-medium rounded border bg-emerald-500 text-white border-emerald-600 cursor-pointer hover:bg-emerald-600 transition-colors touch-manipulation">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ Still there</button>
                         <button onClick={() => setDismissAlerts(prev => [...prev, i.id])}
-                          className="px-2 py-0.5 text-xs font-medium rounded border border-amber-300 dark:border-amber-700 bg-transparent text-amber-700 dark:text-amber-300 cursor-pointer hover:bg-amber-50 dark:hover:bg-amber-900/30 transition-colors touch-manipulation">âœ• Dismiss</button>
+                          className="px-2 py-0.5 text-xs font-medium rounded border border-amber-300 dark:border-amber-700 bg-transparent text-amber-700 dark:text-amber-300 cursor-pointer hover:bg-amber-50 dark:hover:bg-amber-900/30 transition-colors touch-manipulation">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢ Dismiss</button>
                       </div>
                     </div>
                   ))}
@@ -1418,7 +1418,7 @@ export default function App() {
                 <button onClick={() => {
                   setItems(prev => prev.map(i => ({ ...i, lastConfirmed: new Date().toISOString() })))
                   setDismissAlerts([])
-                }} className="ml-auto bg-none border-none text-lg cursor-pointer text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/30 p-1 rounded touch-manipulation">âœ•</button>
+                }} className="ml-auto bg-none border-none text-lg cursor-pointer text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/30 p-1 rounded touch-manipulation">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢</button>
               </div>
             )}
 
@@ -1450,12 +1450,12 @@ export default function App() {
                 onFocus={() => setSearchFocused(true)}
                 onBlur={() => setTimeout(() => setSearchFocused(false), 200)}
                 className="w-full px-4 py-3 pr-14 border border-gray-200 dark:border-gray-700 rounded-xl text-sm outline-none focus:border-blue-500 focus:ring-3 focus:ring-blue-500/40 bg-white dark:bg-gray-800 dark:text-gray-100 transition-colors" />
-              <button aria-label="Voice search" onClick={startVoiceSearch} className={`absolute right-9 top-1/2 -translate-y-1/2 bg-none border-none text-base cursor-pointer text-gray-500 dark:text-gray-400 p-1.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors ${isListening ? '!text-red-500 animate-pulse bg-red-500/10' : ''} touch-manipulation`}>{isListening ? 'ðŸ”´' : 'ðŸŽ¤'}</button>
+              <button aria-label="Voice search" onClick={startVoiceSearch} className={`absolute right-9 top-1/2 -translate-y-1/2 bg-none border-none text-base cursor-pointer text-gray-500 dark:text-gray-400 p-1.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors ${isListening ? '!text-red-500 animate-pulse bg-red-500/10' : ''} touch-manipulation`}>{isListening ? 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â´' : 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â½ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¤'}</button>
               {searchQuery && (
-                <button aria-label="Clear search" onClick={() => { setSearchQuery(''); setGlowingItemId(null); setGlowingZoneId(null); setGlowingRoomIds([]); setAiResults([]) }} className="absolute right-2 top-1/2 -translate-y-1/2 bg-none border-none text-base cursor-pointer text-gray-400 p-1 touch-manipulation">âœ•</button>
+                <button aria-label="Clear search" onClick={() => { setSearchQuery(''); setGlowingItemId(null); setGlowingZoneId(null); setGlowingRoomIds([]); setAiResults([]) }} className="absolute right-2 top-1/2 -translate-y-1/2 bg-none border-none text-base cursor-pointer text-gray-400 p-1 touch-manipulation">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢</button>
               )}
 
-              {/* â”€â”€ Kiosk-Style Search Results Dropdown â”€â”€ */}
+              {/* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ Kiosk-Style Search Results Dropdown ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */}
               {searchFocused && searchQuery && (
                 <div aria-live="polite" className="absolute top-full left-0 right-0 mt-1 z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.15)] dark:shadow-[0_8px_32px_rgba(0,0,0,0.4)] overflow-hidden animate-[fadeInUp_0.15s_ease-out]">
                   {aiThinking && (
@@ -1478,7 +1478,7 @@ export default function App() {
                           onClick={() => selectAiResult(result)}
                           className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-all cursor-pointer border-none touch-manipulation ${
                             idx === 0
-                              ? 'bg-blue-50/80 dark:bg-blue-900/30 shadow-[inset_0_0_0_1px_rgba(99,102,241,0.3)]'
+                              ? 'bg-blue-50/80 dark:bg-blue-900/30 shadow-[inset_0_0_0_1px_rgba(59,130,246,0.3)]'
                               : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'
                           } ${isOther ? 'border-l-3 border-l-amber-400' : ''}`}>
                           <div className="w-9 h-9 rounded-full flex-shrink-0 overflow-hidden bg-gray-100 dark:bg-gray-700">
@@ -1500,20 +1500,20 @@ export default function App() {
                               <strong className="text-sm text-gray-900 dark:text-gray-100">{result.itemName}</strong>
                               {idx === 0 && (
                                 <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400 whitespace-nowrap">
-                                  {scorePct >= 80 ? 'ðŸ† Best' : 'Best'}
+                                  {scorePct >= 80 ? 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â  Best' : 'Best'}
                                 </span>
                               )}
                               {result.zone && (
                                 <span className="text-[10px] font-mono px-1 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400 whitespace-nowrap">
-                                  ðŸ“ {result.zone.label}
+                                  ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â {result.zone.label}
                                 </span>
                               )}
                             </div>
                             <div className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
-                              <span>ðŸ“ {result.location}</span>
-                              <span className="text-gray-300 dark:text-gray-600">Â·</span>
+                              <span>ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â {result.location}</span>
+                              <span className="text-gray-300 dark:text-gray-600">ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â·</span>
                               <span className="text-blue-500 font-medium">{result.roomName}</span>
-                              {isOther && <span className="text-amber-500 font-medium">â†º</span>}
+                              {isOther && <span className="text-amber-500 font-medium">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Âº</span>}
                             </div>
                           </div>
                           <div className="flex flex-col items-end gap-1 flex-shrink-0">
@@ -1552,10 +1552,10 @@ export default function App() {
               </div>
             )}
 
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">{roomItems.length} item{roomItems.length !== 1 ? 's' : ''} in this room{searchQuery ? ` Â· ${filtered.length} match${filtered.length !== 1 ? 'es' : ''}` : ''}</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">{roomItems.length} item{roomItems.length !== 1 ? 's' : ''} in this room{searchQuery ? ` ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· ${filtered.length} match${filtered.length !== 1 ? 'es' : ''}` : ''}</p>
           </header>
 
-          {/* â”€â”€ Room Tabs â”€â”€ */}
+          {/* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ Room Tabs ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */}
           <div className="flex gap-1.5 mb-3 overflow-x-auto pb-1 flex-shrink-0 room-tabs max-md:overflow-x-auto max-md:snap-x max-md:snap-mandatory max-md:gap-1 max-md:pb-2 max-md:flex-nowrap">
             {rooms.map(r => {
               const hasGlow = glowingRoomIds.includes(r.id) || (glowingItemId && items.find(i => i.id === glowingItemId)?.roomId === r.id && r.id !== currentRoomId)
@@ -1576,7 +1576,7 @@ export default function App() {
               className="flex items-center justify-center w-9 h-9 bg-transparent border border-dashed border-gray-300 dark:border-gray-600 rounded-lg text-lg text-gray-500 dark:text-gray-400 cursor-pointer hover:border-blue-500 hover:text-blue-500 flex-shrink-0 transition-colors max-md:w-8 max-md:h-8 touch-manipulation">+</button>
           </div>
 
-          {/* â”€â”€ Main Layout â”€â”€ */}
+          {/* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ Main Layout ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */}
           <div className="grid grid-cols-[1fr_340px] gap-5 items-start max-md:grid-cols-1">
             {/* Items Panel */}
             <div className="min-w-0 flex flex-col">
@@ -1585,20 +1585,20 @@ export default function App() {
                   <div className="text-center py-12 px-6 bg-white dark:bg-gray-800 border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-xl">
                     {searchQuery ? (
                       <>
-                        <div className="text-5xl mb-3">ðŸ”</div>
+                        <div className="text-5xl mb-3">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â</div>
                         <h2 className="text-lg font-semibold mb-2">No items match your search</h2>
                         <p className="text-sm text-gray-500 dark:text-gray-400">Try a different search term</p>
                       </>
                     ) : (
                       <>
-                        <div className="text-5xl mb-3">ðŸ </div>
+                        <div className="text-5xl mb-3">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â </div>
                         <h2 className="text-lg font-semibold mb-2">Welcome to your {room.name}</h2>
                         <p className="text-sm text-gray-500 dark:text-gray-400 mb-5">Start tracking your belongings in 3 simple steps</p>
                         <div className="text-left max-w-xs mx-auto">
                           {[
-                            { num: '1', icon: 'ðŸ“¸', title: 'Scan your room', desc: 'Point your camera â€” AI auto-detects items' },
-                            { num: '2', icon: 'âœï¸', title: 'Or add items manually', desc: 'Tap "+ Add Item" and type what you stored' },
-                            { num: '3', icon: 'ðŸ”', title: 'Find in seconds', desc: 'Search any item later â€” know exactly where it is' },
+                            { num: '1', icon: 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸', title: 'Scan your room', desc: 'Point your camera ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â AI auto-detects items' },
+                            { num: '2', icon: 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â', title: 'Or add items manually', desc: 'Tap "+ Add Item" and type what you stored' },
+                            { num: '3', icon: 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â', title: 'Find in seconds', desc: 'Search any item later ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â know exactly where it is' },
                           ].map((s, i) => (
                             <div key={i} className="flex gap-3 items-start p-3 mb-2 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-100 dark:border-gray-700 hover:border-blue-200 dark:hover:border-blue-800 transition-colors animate-[fadeInUp_0.4s_ease-out_both]" style={{ animationDelay: `${0.1 + i * 0.1}s` }}>
                               <div className="w-7 h-7 rounded-full bg-blue-500 text-white flex items-center justify-center text-xs font-bold flex-shrink-0">{s.num}</div>
@@ -1623,7 +1623,7 @@ export default function App() {
                     return (
                       <div key={item.id}
                         className={`bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm transition-all hover:shadow-md hover:-translate-y-0.5 animate-[fadeInUp_0.3s_ease-out_both] ${
-                          glowingItemId === item.id ? '!border-blue-500 !shadow-[0_0_0_2px_rgba(99,102,241,0.15)]' : ''
+                          glowingItemId === item.id ? '!border-blue-500 !shadow-[0_0_0_2px_rgba(59,130,246,0.15)]' : ''
                         }`}>
                         <div className="flex items-center gap-3">
                           {/* Category / Image thumbnail */}
@@ -1639,7 +1639,7 @@ export default function App() {
                                 {categoryIcon(item.category)}
                               </div>
                             )}
-                            <span className="absolute inset-0 flex items-center justify-center bg-black/50 text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity">ðŸ“·</span>
+                            <span className="absolute inset-0 flex items-center justify-center bg-black/50 text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â·</span>
                           </button>
 
                           {/* Main content */}
@@ -1650,29 +1650,29 @@ export default function App() {
                                 style={{ background: `${pinColor(item.category)}18`, color: pinColor(item.category) }}>{item.category}</span>
                             </div>
                             <div className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 flex-wrap">
-                              <span>ðŸ“ {item.location}</span>
-                              <span className="text-gray-300 dark:text-gray-600">Â·</span>
-                              <span>ðŸ•’ Last verified: {isValidDate(item.lastConfirmed) ? shortDate(new Date(item.lastConfirmed)) : 'â€”'}</span>
+                              <span>ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â {item.location}</span>
+                              <span className="text-gray-300 dark:text-gray-600">ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â·</span>
+                              <span>ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ Last verified: {isValidDate(item.lastConfirmed) ? shortDate(new Date(item.lastConfirmed)) : 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â'}</span>
                             </div>
                           </div>
 
                           {/* Confidence + Actions */}
                           <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
                             <div className={`inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full whitespace-nowrap ${confColor}`}>
-                              <span>{pct >= 100 ? 'ðŸŸ¢' : pct >= 86 ? 'ðŸŸ¡' : 'ðŸ”´'}</span>
+                              <span>{pct >= 100 ? 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢' : pct >= 86 ? 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡' : 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â´'}</span>
                               <span>{timeAgo(item.lastConfirmed)}</span>
                             </div>
                             {pct < 86 && (
                               <button onClick={() => { setGlowingItemId(item.id); if (searchPulseTimer.current) clearTimeout(searchPulseTimer.current); searchPulseTimer.current = setTimeout(() => setGlowingItemId(null), 4000) }}
-                                className="text-[10px] text-blue-500 font-medium hover:underline cursor-pointer bg-none border-none touch-manipulation">âŸ³ Re-scan now</button>
+                                className="text-[10px] text-blue-500 font-medium hover:underline cursor-pointer bg-none border-none touch-manipulation">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ Re-scan now</button>
                             )}
                             <div className="flex items-center gap-1">
                               <button aria-label="Show on map" onClick={() => { setGlowingItemId(item.id); if (pulseTimer.current) clearTimeout(pulseTimer.current); pulseTimer.current = setTimeout(() => setGlowingItemId(null), 3000) }}
-                                className="w-11 h-11 flex items-center justify-center rounded-md border border-gray-200 dark:border-gray-600 text-sm cursor-pointer bg-transparent hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors touch-manipulation" title="Show on map">ðŸ“</button>
+                                className="w-11 h-11 flex items-center justify-center rounded-md border border-gray-200 dark:border-gray-600 text-sm cursor-pointer bg-transparent hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors touch-manipulation" title="Show on map">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â</button>
                               <button aria-label="Edit item" onClick={() => { setEditingItem(item); setShowAddModal(true) }}
-                                className="w-11 h-11 flex items-center justify-center rounded-md border border-gray-200 dark:border-gray-600 text-sm cursor-pointer bg-transparent hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors touch-manipulation" title="Edit">âœï¸</button>
+                                className="w-11 h-11 flex items-center justify-center rounded-md border border-gray-200 dark:border-gray-600 text-sm cursor-pointer bg-transparent hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors touch-manipulation" title="Edit">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â</button>
                               <button aria-label="Delete item" onClick={() => { if (confirm('Delete this item?')) deleteItem(item.id) }}
-                                className="w-11 h-11 flex items-center justify-center rounded-md border border-red-200 dark:border-red-900 text-sm cursor-pointer bg-transparent hover:bg-red-50 dark:hover:bg-red-900/30 text-red-500 transition-colors touch-manipulation" title="Delete">ðŸ—‘ï¸</button>
+                                className="w-11 h-11 flex items-center justify-center rounded-md border border-red-200 dark:border-red-900 text-sm cursor-pointer bg-transparent hover:bg-red-50 dark:hover:bg-red-900/30 text-red-500 transition-colors touch-manipulation" title="Delete">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¹Ã…â€œÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â</button>
                             </div>
                           </div>
                         </div>
@@ -1699,7 +1699,7 @@ export default function App() {
           </div>
         )}
 
-        {/* â”€â”€ AI Vision Scanner Overlay â”€â”€ */}
+        {/* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ AI Vision Scanner Overlay ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */}
         {showCameraScan && (
           <div role="dialog" aria-modal="true" aria-label="AI Item Scanner"
             className="fixed inset-0 z-[9999] bg-[rgba(15,23,42,0.96)] flex items-center justify-center p-4 animate-[fadeIn_0.25s_ease-out]"
@@ -1709,13 +1709,13 @@ export default function App() {
               {/* Header */}
               <div className="flex items-center justify-between w-full mb-3">
                 <h2 className="text-slate-100 text-lg">
-                  {scanMode === 'camera' ? 'ðŸ“¸ Point & Scan' : scanMode === 'analyzing' ? 'ðŸ¤” AI Analyzing...' : scanMode === 'result' ? 'âœ… Scan Result' : 'ðŸ“¸ Captured'}
+                  {scanMode === 'camera' ? 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ Point & Scan' : scanMode === 'analyzing' ? 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¤ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â AI Analyzing...' : scanMode === 'result' ? 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ Scan Result' : 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ Captured'}
                 </h2>
                 <button aria-label="Close scan" onClick={closeScanner}
-                  className="bg-none border-none text-lg cursor-pointer text-slate-400 hover:bg-slate-800 p-1 rounded transition-colors touch-manipulation">âœ•</button>
+                  className="bg-none border-none text-lg cursor-pointer text-slate-400 hover:bg-slate-800 p-1 rounded transition-colors touch-manipulation">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢</button>
               </div>
 
-              {/* â”€â”€ CAMERA VIEW â”€â”€ */}
+              {/* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ CAMERA VIEW ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */}
               {scanMode === 'camera' && (
                 <>
                   <div className="relative w-full aspect-[4/3] bg-slate-800 rounded-xl overflow-hidden border-2 border-emerald-500">
@@ -1735,7 +1735,7 @@ export default function App() {
                 </>
               )}
 
-              {/* â”€â”€ CAPTURED / ANALYZING â”€â”€ */}
+              {/* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ CAPTURED / ANALYZING ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */}
               {(scanMode === 'captured' || scanMode === 'analyzing') && capturedImage && (
                 <>
                   <div className="relative w-full aspect-[4/3] bg-slate-800 rounded-xl overflow-hidden border-2 border-blue-500">
@@ -1750,12 +1750,12 @@ export default function App() {
                   </div>
                   <div className="flex gap-3 mt-4">
                     <button onClick={retakePhoto}
-                      className="px-5 py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm cursor-pointer transition-colors touch-manipulation">âŸ³ Retake</button>
+                      className="px-5 py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm cursor-pointer transition-colors touch-manipulation">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ Retake</button>
                   </div>
                 </>
               )}
 
-              {/* â”€â”€ RESULT VIEW â”€â”€ */}
+              {/* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ RESULT VIEW ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */}
               {scanMode === 'result' && capturedImage && (
                 <div className="flex flex-col gap-4 w-full">
                   <div className="relative w-full aspect-[4/3] bg-slate-800 rounded-xl overflow-hidden border-2 border-emerald-500">
@@ -1807,9 +1807,9 @@ export default function App() {
                     </div>
                     <div className="flex gap-2">
                       <button type="button" onClick={retakePhoto}
-                        className="flex-1 px-4 py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm cursor-pointer transition-colors touch-manipulation">âŸ³ Retake</button>
+                        className="flex-1 px-4 py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm cursor-pointer transition-colors touch-manipulation">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ Retake</button>
                       <button type="submit"
-                        className="flex-[2] px-4 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-sm font-semibold cursor-pointer transition-all touch-manipulation">ðŸ’¾ Save & Add to List</button>
+                        className="flex-[2] px-4 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-sm font-semibold cursor-pointer transition-all touch-manipulation">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¾ Save & Add to List</button>
                     </div>
                   </form>
                 </div>
@@ -1818,19 +1818,19 @@ export default function App() {
           </div>
         )}
 
-        {/* â”€â”€ Scanned Items Gallery (Categorized) â”€â”€ */}
+        {/* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ Scanned Items Gallery (Categorized) ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */}
         {showScannedGallery && (
           <div role="dialog" aria-modal="true" aria-label="Photo library"
             className="fixed inset-0 z-[9999] bg-[rgba(15,23,42,0.97)] flex flex-col animate-[fadeIn_0.2s_ease-out]"
             onClick={e => { if (e.target === e.currentTarget) setShowScannedGallery(false) }}>
             <div className="sticky top-0 z-10 bg-[rgba(15,23,42,0.97)] border-b border-slate-700/50">
               <div className="flex items-center justify-between p-4 max-w-6xl mx-auto w-full">
-                <h2 className="text-slate-100 text-lg font-semibold">ðŸ“¸ Photo Library ({photosFromServer ? Object.values(photosFromServer).reduce((sum: number, arr: any[]) => sum + arr.length, 0) + scannedItems.length : scannedItems.length})</h2>
+                <h2 className="text-slate-100 text-lg font-semibold">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ Photo Library ({photosFromServer ? Object.values(photosFromServer).reduce((sum: number, arr: any[]) => sum + arr.length, 0) + scannedItems.length : scannedItems.length})</h2>
                 <div className="flex items-center gap-3">
                   <button onClick={() => syncHistory()}
                     className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded-lg cursor-pointer transition-colors touch-manipulation">Sync History</button>
                   <button aria-label="Close gallery" onClick={() => setShowScannedGallery(false)}
-                    className="bg-none border-none text-lg cursor-pointer text-slate-400 hover:bg-slate-800 p-1.5 rounded transition-colors touch-manipulation">âœ•</button>
+                    className="bg-none border-none text-lg cursor-pointer text-slate-400 hover:bg-slate-800 p-1.5 rounded transition-colors touch-manipulation">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢</button>
                 </div>
               </div>
             </div>
@@ -1844,7 +1844,7 @@ export default function App() {
 
             {!photosLoading && (
               <>
-                {/* â”€â”€ Server photos (R2) â”€â”€ */}
+                {/* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ Server photos (R2) ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */}
                 {photosFromServer && Object.keys(photosFromServer).length > 0 ? (
                   <div className="flex-1 overflow-y-auto max-w-6xl mx-auto w-full p-4 pt-3">
                     {['Documents', 'Keys', 'Electronics', 'Warranties', 'Valuables', 'Other'].map(cat => {
@@ -1875,7 +1875,7 @@ export default function App() {
                           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5">
                             {combined.map(item => (
                               <div key={item.id}
-                                className="bg-slate-800 rounded-xl overflow-hidden border border-slate-700 hover:border-blue-500/60 hover:shadow-[0_0_15px_rgba(99,102,241,0.2)] transition-all group cursor-pointer">
+                                className="bg-slate-800 rounded-xl overflow-hidden border border-slate-700 hover:border-blue-500/60 hover:shadow-[0_0_15px_rgba(59,130,246,0.2)] transition-all group cursor-pointer">
                                 <div className="aspect-[4/3] bg-slate-700 relative overflow-hidden">
                                   <img src={item.imageUrl || item.imageData} alt={item.name} className="w-full h-full object-cover" />
                                   {item.aiDetected && (
@@ -1888,9 +1888,9 @@ export default function App() {
                                       const parts = item.imageUrl?.split('/api/photos/')
                                       setAssigningPhoto({ id: item.id, r2Key: parts?.length === 2 ? parts[1] : undefined, imageData: item.imageData })
                                     }}
-                                      className="px-2.5 py-1.5 bg-blue-500 text-white text-[11px] rounded-lg cursor-pointer hover:bg-blue-600 transition-colors touch-manipulation font-semibold">ðŸ”— Assign</button>
+                                      className="px-2.5 py-1.5 bg-blue-500 text-white text-[11px] rounded-lg cursor-pointer hover:bg-blue-600 transition-colors touch-manipulation font-semibold">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â Assign</button>
                                     <button onClick={() => { if (confirm('Delete this scan?')) deleteScannedItem(item.id) }}
-                                      className="px-2.5 py-1.5 bg-red-500/80 text-white text-[11px] rounded-lg cursor-pointer hover:bg-red-600 transition-colors touch-manipulation">ðŸ—‘ï¸</button>
+                                      className="px-2.5 py-1.5 bg-red-500/80 text-white text-[11px] rounded-lg cursor-pointer hover:bg-red-600 transition-colors touch-manipulation">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¹Ã…â€œÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â</button>
                                   </div>
                                 </div>
                                 <div className="p-2">
@@ -1911,7 +1911,7 @@ export default function App() {
                   </div>
                 ) : scannedItems.length === 0 ? (
                   <div className="flex-1 flex flex-col items-center justify-center text-slate-500">
-                    <div className="text-6xl mb-4">ðŸ“¸</div>
+                    <div className="text-6xl mb-4">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸</div>
                     <p className="text-lg font-medium mb-1">No scanned items yet</p>
                     <p className="text-sm">Use the Scan button to take photos of your items</p>
                   </div>
@@ -1938,7 +1938,7 @@ export default function App() {
                           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5">
                             {group.map(item => (
                               <div key={item.id}
-                                className="bg-slate-800 rounded-xl overflow-hidden border border-slate-700 hover:border-blue-500/60 hover:shadow-[0_0_15px_rgba(99,102,241,0.2)] transition-all group cursor-pointer">
+                                className="bg-slate-800 rounded-xl overflow-hidden border border-slate-700 hover:border-blue-500/60 hover:shadow-[0_0_15px_rgba(59,130,246,0.2)] transition-all group cursor-pointer">
                                 <div className="aspect-[4/3] bg-slate-700 relative overflow-hidden">
                                   <img src={item.imageUrl || item.imageData} alt={item.name} className="w-full h-full object-cover" />
                                   {item.aiDetected && (
@@ -1951,9 +1951,9 @@ export default function App() {
                                       const parts = item.imageUrl?.split('/api/photos/')
                                       setAssigningPhoto({ id: item.id, r2Key: parts?.length === 2 ? parts[1] : undefined, imageData: item.imageData })
                                     }}
-                                      className="px-2.5 py-1.5 bg-blue-500 text-white text-[11px] rounded-lg cursor-pointer hover:bg-blue-600 transition-colors touch-manipulation font-semibold">ðŸ”— Assign</button>
+                                      className="px-2.5 py-1.5 bg-blue-500 text-white text-[11px] rounded-lg cursor-pointer hover:bg-blue-600 transition-colors touch-manipulation font-semibold">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â Assign</button>
                                     <button onClick={() => { if (confirm('Delete this scan?')) deleteScannedItem(item.id) }}
-                                      className="px-2.5 py-1.5 bg-red-500/80 text-white text-[11px] rounded-lg cursor-pointer hover:bg-red-600 transition-colors touch-manipulation">ðŸ—‘ï¸</button>
+                                      className="px-2.5 py-1.5 bg-red-500/80 text-white text-[11px] rounded-lg cursor-pointer hover:bg-red-600 transition-colors touch-manipulation">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¹Ã…â€œÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â</button>
                                   </div>
                                 </div>
                                 <div className="p-2">
@@ -1978,16 +1978,16 @@ export default function App() {
           </div>
         )}
 
-        {/* â”€â”€ Assign Photo to Item Picker â”€â”€ */}
+        {/* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ Assign Photo to Item Picker ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */}
         {assigningPhoto && (
           <div role="dialog" aria-modal="true" aria-label="Assign photo to item"
             className="fixed inset-0 z-[10000] bg-black/50 flex items-center justify-center p-5 animate-[fadeIn_0.15s_ease-out]"
             onClick={e => { if (e.target === e.currentTarget) setAssigningPhoto(null) }}>
             <div className="bg-gray-900 rounded-xl shadow-xl p-5 w-full max-w-sm max-h-[70vh] flex flex-col border border-gray-700">
               <div className="flex items-center justify-between mb-3">
-                <h3 className="text-slate-100 text-sm font-semibold">ðŸ”— Assign photo to item</h3>
+                <h3 className="text-slate-100 text-sm font-semibold">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â Assign photo to item</h3>
                 <button onClick={() => setAssigningPhoto(null)}
-                  className="bg-none border-none text-slate-400 cursor-pointer hover:text-slate-200 p-1 rounded transition-colors text-lg">âœ•</button>
+                  className="bg-none border-none text-slate-400 cursor-pointer hover:text-slate-200 p-1 rounded transition-colors text-lg">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢</button>
               </div>
               <input id="assign-search" type="text" placeholder="Search items..." autoComplete="off"
                 className="w-full px-3 py-2 text-sm bg-slate-800 border border-slate-600 rounded-lg text-slate-100 outline-none focus:border-blue-500 mb-3"
@@ -2011,7 +2011,7 @@ export default function App() {
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium text-slate-200 truncate group-hover:text-blue-300 transition-colors">{it.name}</p>
-                        <p className="text-xs text-slate-500">{it.location} Â· {rooms.find(r => r.id === it.roomId)?.name || 'Unknown'}</p>
+                        <p className="text-xs text-slate-500">{it.location} ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· {rooms.find(r => r.id === it.roomId)?.name || 'Unknown'}</p>
                       </div>
                     </button>
                   ))
@@ -2021,20 +2021,20 @@ export default function App() {
           </div>
         )}
 
-        {/* â”€â”€ Add Photo to Item Picker â”€â”€ */}
+        {/* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ Add Photo to Item Picker ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */}
         {pickForItem && (
           <div role="dialog" aria-modal="true" aria-label="Add photo to item"
             className="fixed inset-0 z-[10001] bg-black/50 flex items-center justify-center p-5 animate-[fadeIn_0.15s_ease-out]"
             onClick={e => { if (e.target === e.currentTarget) setPickForItem(null) }}>
             <div className="bg-gray-900 rounded-xl shadow-xl p-5 w-full max-w-sm max-h-[70vh] flex flex-col border border-gray-700">
               <div className="flex items-center justify-between mb-3">
-                <h3 className="text-slate-100 text-sm font-semibold">ðŸ“· Add photo to {pickForItem.name}</h3>
+                <h3 className="text-slate-100 text-sm font-semibold">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· Add photo to {pickForItem.name}</h3>
                 <button onClick={() => setPickForItem(null)}
-                  className="bg-none border-none text-slate-400 cursor-pointer hover:text-slate-200 p-1 rounded transition-colors text-lg">âœ•</button>
+                  className="bg-none border-none text-slate-400 cursor-pointer hover:text-slate-200 p-1 rounded transition-colors text-lg">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢</button>
               </div>
               {pickForItem.imageKey && (
                 <button onClick={() => removeItemPhoto(pickForItem.id)}
-                  className="w-full px-3 py-2 mb-3 text-sm bg-transparent border border-red-500/40 text-red-400 hover:bg-red-500/10 rounded-lg transition-all cursor-pointer">ðŸ—‘ï¸ Remove current photo</button>
+                  className="w-full px-3 py-2 mb-3 text-sm bg-transparent border border-red-500/40 text-red-400 hover:bg-red-500/10 rounded-lg transition-all cursor-pointer">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¹Ã…â€œÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â Remove current photo</button>
               )}
               <input id="pick-photo-search" type="text" placeholder="Search photos..." autoComplete="off"
                 className="w-full px-3 py-2 text-sm bg-slate-800 border border-slate-600 rounded-lg text-slate-100 outline-none focus:border-blue-500 mb-3"
@@ -2053,7 +2053,7 @@ export default function App() {
                           <img src={s.imageUrl ?? s.imageData} alt={s.name} className="w-8 h-8 rounded-full flex-shrink-0 object-cover bg-slate-700" />
                           <div className="flex-1 min-w-0">
                             <p className="text-sm font-medium text-slate-200 truncate">{s.name}</p>
-                            <p className="text-xs text-slate-500">{s.category} Â· {s.location}</p>
+                            <p className="text-xs text-slate-500">{s.category} ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· {s.location}</p>
                           </div>
                           <button onClick={() => attachPhotoToItem(pickForItem.id, s.imageUrl ? s.imageUrl.split('/api/photos/')[1] : undefined, s.imageData)}
                             className="flex-shrink-0 px-2.5 py-1 text-xs font-medium bg-blue-500/20 text-blue-300 border border-blue-500/40 hover:bg-blue-500/40 hover:text-blue-200 rounded-lg transition-all cursor-pointer">Attach</button>
@@ -2074,7 +2074,7 @@ export default function App() {
                             <img src={url} alt={p.item_name || 'Photo'} className="w-8 h-8 rounded-full flex-shrink-0 object-cover bg-slate-700" />
                             <div className="flex-1 min-w-0">
                               <p className="text-sm font-medium text-slate-200 truncate">{p.item_name || 'Untitled'}</p>
-                              <p className="text-xs text-slate-500">{p.category || 'Other'} Â· {p.room_location || 'Scanned'}</p>
+                              <p className="text-xs text-slate-500">{p.category || 'Other'} ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· {p.room_location || 'Scanned'}</p>
                             </div>
                             <button onClick={() => attachPhotoToItem(pickForItem.id, p.r2_key, undefined)}
                               className="flex-shrink-0 px-2.5 py-1 text-xs font-medium bg-blue-500/20 text-blue-300 border border-blue-500/40 hover:bg-blue-500/40 hover:text-blue-200 rounded-lg transition-all cursor-pointer">Attach</button>
@@ -2102,7 +2102,7 @@ export default function App() {
               <div className="flex items-center justify-between mb-6">
                 <h2 className="text-lg font-bold">{editingItem ? 'Edit Item' : 'Add New Item'}</h2>
                 <button aria-label="Close modal" onClick={() => { setShowAddModal(false); setEditingItem(null) }}
-                  className="bg-none border-none text-lg cursor-pointer text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 p-1 rounded transition-colors touch-manipulation">âœ•</button>
+                  className="bg-none border-none text-lg cursor-pointer text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 p-1 rounded transition-colors touch-manipulation">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢</button>
               </div>
               <form onSubmit={e => {
                 e.preventDefault()
@@ -2145,7 +2145,7 @@ export default function App() {
                   </select>
                 </div>
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-xs font-semibold text-gray-700 dark:text-gray-200">Position on Map â€” <small className="font-normal text-gray-500">Click on the map to place the pin</small></label>
+                  <label className="text-xs font-semibold text-gray-700 dark:text-gray-200">Position on Map ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â <small className="font-normal text-gray-500">Click on the map to place the pin</small></label>
                   <div id="mini-map" className="relative w-full aspect-[4/3] bg-gray-50 dark:bg-gray-900 border-2 border-gray-200 dark:border-gray-700 rounded-lg cursor-crosshair overflow-hidden"
                     onClick={e => {
                       const rect = e.currentTarget.getBoundingClientRect()
@@ -2159,7 +2159,7 @@ export default function App() {
                         <span className="text-[10px] text-gray-500 dark:text-gray-400 font-medium">{z.label}</span>
                       </div>
                     ))}
-                    <div id="mini-pin" className="absolute text-2xl z-5 pointer-events-none" style={{ left: `${editingItem?.zoneX || 50}%`, top: `${editingItem?.zoneY || 50}%`, transform: 'translate(-50%, -100%)', filter: 'drop-shadow(0 2px 3px rgba(0,0,0,0.3))' }}>ðŸ“</div>
+                    <div id="mini-pin" className="absolute text-2xl z-5 pointer-events-none" style={{ left: `${editingItem?.zoneX || 50}%`, top: `${editingItem?.zoneY || 50}%`, transform: 'translate(-50%, -100%)', filter: 'drop-shadow(0 2px 3px rgba(0,0,0,0.3))' }}>ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â</div>
                   </div>
                 </div>
                 <button type="submit" className="w-full py-3 bg-blue-500 hover:bg-blue-600 text-white font-semibold rounded-lg transition-all cursor-pointer touch-manipulation">
@@ -2173,7 +2173,7 @@ export default function App() {
         {/* Confetti */}
         {showConfetti && (
           <div className="fixed inset-0 pointer-events-none z-50 overflow-hidden">
-            {['#6366f1','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#ec4899','#84cc16'].map((c, i) => (
+            {['#3b82f6','#10b981','#f59e0b','#ef4444','#2563eb','#06b6d4','#ec4899','#84cc16'].map((c, i) => (
               <div key={i} className="absolute -top-2.5 w-2 h-2 rounded-sm animate-[confetti-fall_1.2s_ease-in_forwards]"
                 style={{ left: `${10 + i * 10}%`, background: c, animationDelay: `${i * 0.05}s` }} />
             ))}
@@ -2183,9 +2183,9 @@ export default function App() {
         {/* Mobile Bottom Bar */}
         <div className="hidden max-md:flex items-center gap-2 fixed bottom-0 left-0 right-0 z-50 p-2.5 pb-[max(10px,env(safe-area-inset-bottom))] bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 shadow-[0_-4px_12px_rgba(0,0,0,0.06)] backdrop-blur-xl">
           <button onClick={() => { setShowCameraScan(true); openScanCamera() }}
-            className="flex-1 py-3.5 bg-emerald-500 hover:bg-emerald-600 text-white border-none rounded-xl text-base font-semibold cursor-pointer transition-all shadow-[0_4px_12px_rgba(16,185,129,0.3)] active:scale-97 touch-manipulation">ðŸ“¸ Scan Item</button>
+            className="flex-1 py-3.5 bg-emerald-500 hover:bg-emerald-600 text-white border-none rounded-xl text-base font-semibold cursor-pointer transition-all shadow-[0_4px_12px_rgba(16,185,129,0.3)] active:scale-97 touch-manipulation">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ Scan Item</button>
           <button onClick={startVoiceSearch}
-            className={`w-12 h-12 rounded-xl border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 text-xl cursor-pointer flex items-center justify-center transition-colors text-gray-500 dark:text-gray-400 hover:border-gray-400 ${isListening ? '!text-red-500 animate-pulse !border-red-500' : ''} touch-manipulation`}>{isListening ? 'ðŸ”´' : 'ðŸŽ¤'}</button>
+            className={`w-12 h-12 rounded-xl border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 text-xl cursor-pointer flex items-center justify-center transition-colors text-gray-500 dark:text-gray-400 hover:border-gray-400 ${isListening ? '!text-red-500 animate-pulse !border-red-500' : ''} touch-manipulation`}>{isListening ? 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â´' : 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â½ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¤'}</button>
         </div>
 
         {/* Inline Prompt */}
@@ -2208,11 +2208,11 @@ export default function App() {
           </div>
         )}
 
-        {/* â”€â”€ Chatbot Sidebar â”€â”€ */}
+        {/* ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ Chatbot Sidebar ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ */}
         {/* Floating toggle button (visible when chat is closed) */}
         {!showChat && (
           <button onClick={() => { setShowChat(true); setTimeout(() => chatInputRef.current?.focus(), 300) }}
-            className="fixed right-4 bottom-20 z-[9999] w-14 h-14 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 text-white border-none cursor-pointer shadow-[0_4px_20px_rgba(99,102,241,0.5)] hover:shadow-[0_6px_28px_rgba(99,102,241,0.7)] hover:scale-105 active:scale-95 transition-all flex items-center justify-center touch-manipulation animate-[fadeIn_0.3s_ease-out]"
+            className="fixed right-4 bottom-20 z-[9999] w-14 h-14 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 text-white border-none cursor-pointer shadow-[0_4px_20px_rgba(59,130,246,0.5)] hover:shadow-[0_6px_28px_rgba(59,130,246,0.7)] hover:scale-105 active:scale-95 transition-all flex items-center justify-center touch-manipulation animate-[fadeIn_0.3s_ease-out]"
             aria-label="Open AI chat assistant">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-6 h-6"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
             <div className="absolute -top-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full border-2 border-white dark:border-[#0f172a] animate-pulse" />
@@ -2239,7 +2239,7 @@ export default function App() {
                   </div>
                 </div>
                 <button onClick={() => setShowChat(false)} aria-label="Close chat"
-                  className="bg-white/10 hover:bg-white/20 border-none text-white w-8 h-8 rounded-lg cursor-pointer flex items-center justify-center text-lg transition-colors touch-manipulation">âœ•</button>
+                  className="bg-white/10 hover:bg-white/20 border-none text-white w-8 h-8 rounded-lg cursor-pointer flex items-center justify-center text-lg transition-colors touch-manipulation">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢</button>
               </div>
 
               {/* Messages */}
@@ -2249,9 +2249,9 @@ export default function App() {
                     <div className="w-16 h-16 rounded-2xl bg-blue-100 dark:bg-blue-500/20 flex items-center justify-center">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-8 h-8 text-blue-500"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
                     </div>
-                    <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Lost something? ðŸ¤”</h4>
+                    <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Lost something? ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¤ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â</h4>
                     <p className="text-xs text-gray-500 dark:text-gray-400 max-w-[280px]">
-                      Ask me where you put anything â€” I know your inventory! Try "<i>Where are my keys?</i>" or "<i>Show me all documents</i>"
+                      Ask me where you put anything ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â I know your inventory! Try "<i>Where are my keys?</i>" or "<i>Show me all documents</i>"
                     </p>
                     <div className="flex flex-col gap-1.5 w-full max-w-[260px] mt-2">
                       {['Where are my keys?', 'Show my passports', 'What electronics do I have?', 'Find recent items'].map(q => (
@@ -2267,9 +2267,9 @@ export default function App() {
                     {m.role === 'assistant' && m.reasoning && (
                       <details className="max-w-[90%] mb-1 group">
                         <summary className="text-[11px] text-amber-600 dark:text-amber-400 font-medium cursor-pointer select-none flex items-center gap-1.5 opacity-70 hover:opacity-100 transition-opacity">
-                          <span className="inline-block w-3.5 h-3.5 rounded-full bg-amber-100 dark:bg-amber-500/20 flex items-center justify-center text-[9px]">ðŸ’­</span>
+                          <span className="inline-block w-3.5 h-3.5 rounded-full bg-amber-100 dark:bg-amber-500/20 flex items-center justify-center text-[9px]">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â­</span>
                           <span>Reasoned</span>
-                          <span className="text-[9px] opacity-50 group-open:rotate-180 transition-transform">â–¾</span>
+                          <span className="text-[9px] opacity-50 group-open:rotate-180 transition-transform">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¾</span>
                         </summary>
                         <div className="mt-1.5 p-2.5 rounded-lg bg-amber-50/80 dark:bg-amber-500/5 border border-amber-200/60 dark:border-amber-500/20 text-xs text-amber-800 dark:text-amber-300 leading-relaxed whitespace-pre-wrap italic">
                           {m.reasoning}
@@ -2294,7 +2294,7 @@ export default function App() {
                                 setTimeout(() => setGlowingItemId(null), 5000)
                               }}
                                 className="px-2 py-1 text-[11px] rounded-full bg-blue-50 dark:bg-blue-500/20 text-blue-600 dark:text-blue-300 font-medium border border-blue-200 dark:border-blue-500/30 cursor-pointer hover:bg-blue-100 dark:hover:bg-blue-500/30 transition-colors touch-manipulation">
-                                ðŸ“ {item.name}
+                                ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â {item.name}
                               </button>
                             )
                           })}
@@ -2304,15 +2304,15 @@ export default function App() {
                         <div className="mt-2 pt-2 border-t border-gray-200 dark:border-gray-700 flex flex-wrap gap-1.5">
                           {m.actions.map((action, ai) => {
                             const key = `${i}_${ai}`
-                            if (doneActions.includes(key)) return <span key={key} className="px-2.5 py-1.5 text-[11px] rounded-lg font-medium bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-500/30">âœ… {action.label}</span>
-                            if (failedActions.includes(key)) return <span key={key} className="px-2.5 py-1.5 text-[11px] rounded-lg font-medium bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 border border-red-300 dark:border-red-500/30">âŒ {action.label}</span>
+                            if (doneActions.includes(key)) return <span key={key} className="px-2.5 py-1.5 text-[11px] rounded-lg font-medium bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-500/30">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ {action.label}</span>
+                            if (failedActions.includes(key)) return <span key={key} className="px-2.5 py-1.5 text-[11px] rounded-lg font-medium bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 border border-red-300 dark:border-red-500/30">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ {action.label}</span>
                             return <button key={key} onClick={() => {
                               const ok = executeAction(action)
                               if (ok) setDoneActions(prev => [...prev, key])
                               else { setFailedActions(prev => [...prev, key]); setTimeout(() => setFailedActions(prev => prev.filter(k => k !== key)), 2500) }
                             }}
                               className="px-2.5 py-1.5 text-[11px] rounded-lg font-medium border cursor-pointer transition-all touch-manipulation bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 border-gray-300 dark:border-gray-600 hover:border-blue-500 hover:bg-blue-50 dark:hover:bg-blue-500/20">
-                              âš¡ {action.label}
+                              ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ {action.label}
                             </button>
                           })}
                         </div>
