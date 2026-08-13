@@ -572,11 +572,6 @@ function RoomMapPanel({
                 onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDropZoneId(zone.id) }}
                 onDrop={e => { e.preventDefault(); const id = e.dataTransfer.getData('text/plain'); if (id) onAssignItem(id, zone.id); setDropZoneId(null) }}
                 onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropZoneId(null) }}>
-                {isEditingMap ? (
-                  <span className="inline-flex items-center justify-center w-11 h-11 -m-3 text-xs text-gray-500 dark:text-gray-400 cursor-grab active:cursor-grabbing select-none">⠿</span>
-                ) : (
-                  <span className="block text-center text-xs text-gray-500 dark:text-gray-400 opacity-40 cursor-grab select-none mb-0.5">⠿</span>
-                )}
                 <span className="block text-[11px] text-gray-500 dark:text-gray-400 font-semibold text-center pointer-events-none select-none">{zone.label}</span>
                 {zoned.length > 0 && (
                   <span className="absolute -top-1.5 -right-1.5 w-4.5 h-4.5 rounded-full bg-blue-500 text-white text-[10px] font-bold flex items-center justify-center pointer-events-none select-none">{zoned.length}</span>
