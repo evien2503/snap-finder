@@ -34,7 +34,7 @@ async function aiVectorSearch(
 
 interface Zone { id: string; label: string; x: number; y: number }
 interface Room { id: string; name: string; zones: Zone[] }
-interface Item { id: string; name: string; location: string; category: string; roomId: string; createdAt: string; lastConfirmed: string; zoneX: number; zoneY: number; imageKey?: string }
+interface Item { id: string; name: string; location: string; category: string; roomId: string; createdAt: string; lastConfirmed: string; zoneX: number; zoneY: number; imageKey?: string; imageData?: string }
 interface User { email: string; password: string }
 interface ScannedItem {
   id: string; name: string; category: string; location: string
@@ -918,10 +918,10 @@ export default function App() {
     setItems(prev => prev.map(i => i.id === itemId ? { ...i, roomId: newRoomId, zoneX: -50, zoneY: -50, location: 'Unsorted', lastConfirmed: new Date().toISOString() } : i))
   }
 
-  function addItem(name: string, location: string, category: string, zoneX = 50, zoneY = 50, imageKey?: string) {
+  function addItem(name: string, location: string, category: string, zoneX = 50, zoneY = 50, imageKey?: string, imageData?: string) {
     setItems(prev => [...prev, {
       id: crypto.randomUUID(), name, location, category, roomId: currentRoomId,
-      createdAt: formatDate(new Date()), lastConfirmed: new Date().toISOString(), zoneX, zoneY, imageKey,
+      createdAt: formatDate(new Date()), lastConfirmed: new Date().toISOString(), zoneX, zoneY, imageKey, imageData,
     }])
   }
 
@@ -1104,7 +1104,7 @@ export default function App() {
     uploadPhoto(capturedImage, userRef.current, name || 'Unknown Item', category, 'Scanned').then(upload => {
       if (upload) {
         setScannedItems(prev => prev.map(p => p.id === newItemId ? { ...p, imageUrl: `${AI_SCAN_URL}/api/photos/${upload.r2Key}`, imageData: undefined } : p))
-        setItems(prev => prev.map(p => p.id === mainItemId ? { ...p, imageKey: upload.r2Key } : p))
+        setItems(prev => prev.map(p => p.id === mainItemId ? { ...p, imageKey: upload.r2Key, imageData: undefined } : p))
       }
     }).catch(() => {})
 
@@ -1121,6 +1121,7 @@ export default function App() {
       id: mainItemId, name: name || 'Unknown Item', location: 'Unsorted', category,
       roomId: currentRoomId, createdAt: formatDate(new Date()),
       lastConfirmed: new Date().toISOString(), zoneX: -50, zoneY: -50,
+      imageData: capturedImage, // local base64 photo — shows immediately, R2 upgrade optional
     }])
     setShowConfetti(true); setTimeout(() => setShowConfetti(false), 1500)
     closeScanner()
@@ -1137,23 +1138,24 @@ export default function App() {
       const parts = item.imageUrl.split('/api/photos/')
       if (parts.length === 2) r2Key = parts[1]
     }
-    addItem(item.name, item.location, item.category, item.zoneX, item.zoneY, r2Key)
+    addItem(item.name, item.location, item.category, item.zoneX, item.zoneY, r2Key, r2Key ? undefined : item.imageData)
     setShowConfetti(true); setTimeout(() => setShowConfetti(false), 1500)
   }
 
   function assignPhotoToItem(photoId: string, r2Key: string | undefined, imageData: string | undefined, targetItemId: string) {
     if (r2Key) {
       /* Already has R2 key — assign directly */
-      setItems(prev => prev.map(i => i.id === targetItemId ? { ...i, imageKey: r2Key } : i))
+      setItems(prev => prev.map(i => i.id === targetItemId ? { ...i, imageKey: r2Key, imageData: undefined } : i))
       setScannedItems(prev => prev.map(s => s.id === photoId ? { ...s, imageUrl: `${AI_SCAN_URL}/api/photos/${r2Key}`, imageData: undefined } : s))
     } else if (imageData) {
-      /* Legacy base64 — upload to R2 first, then assign */
+      /* Local base64 — apply immediately; upgrade to R2 in background if worker is up */
+      setItems(prev => prev.map(i => i.id === targetItemId ? { ...i, imageData } : i))
       uploadPhoto(imageData, userRef.current, 'Assigned Photo', 'Other', 'Scanned').then(upload => {
         if (upload) {
-          setItems(prev => prev.map(i => i.id === targetItemId ? { ...i, imageKey: upload.r2Key } : i))
+          setItems(prev => prev.map(i => i.id === targetItemId ? { ...i, imageKey: upload.r2Key, imageData: undefined } : i))
           setScannedItems(prev => prev.map(s => s.id === photoId ? { ...s, imageUrl: `${AI_SCAN_URL}/api/photos/${upload.r2Key}`, imageData: undefined } : s))
         }
-      })
+      }).catch(() => {})
     }
     setAssigningPhoto(null)
   }
@@ -1161,18 +1163,19 @@ export default function App() {
   function attachPhotoToItem(itemId: string, r2Key?: string, imageData?: string) {
     if (r2Key) {
       /* Already has R2 key — assign directly */
-      setItems(prev => prev.map(i => i.id === itemId ? { ...i, imageKey: r2Key } : i))
+      setItems(prev => prev.map(i => i.id === itemId ? { ...i, imageKey: r2Key, imageData: undefined } : i))
     } else if (imageData) {
-      /* Legacy base64 — upload to R2 first, then assign */
+      /* Local base64 — apply immediately; upgrade to R2 in background if worker is up */
+      setItems(prev => prev.map(i => i.id === itemId ? { ...i, imageData } : i))
       uploadPhoto(imageData, userRef.current, 'Assigned Photo', 'Other', 'Scanned').then(upload => {
-        if (upload) setItems(prev => prev.map(i => i.id === itemId ? { ...i, imageKey: upload.r2Key } : i))
-      })
+        if (upload) setItems(prev => prev.map(i => i.id === itemId ? { ...i, imageKey: upload.r2Key, imageData: undefined } : i))
+      }).catch(() => {})
     }
     setPickForItem(null)
   }
 
   function removeItemPhoto(itemId: string) {
-    setItems(prev => prev.map(i => i.id === itemId ? { ...i, imageKey: undefined } : i))
+    setItems(prev => prev.map(i => i.id === itemId ? { ...i, imageKey: undefined, imageData: undefined } : i))
     setPickForItem(null)
   }
 
@@ -1520,6 +1523,9 @@ export default function App() {
                               return foundItem?.imageKey ? (
                                 <img src={`${AI_SCAN_URL}/api/photos/${foundItem.imageKey}`} alt={foundItem.name}
                                   className="w-full h-full object-cover" />
+                              ) : foundItem?.imageData ? (
+                                <img src={foundItem.imageData} alt={foundItem.name}
+                                  className="w-full h-full object-cover" />
                               ) : (
                                 <div className="w-full h-full flex items-center justify-center text-sm"
                                   style={{ background: `${pinColor(result.category)}20`, color: pinColor(result.category) }}>
@@ -1660,11 +1666,14 @@ export default function App() {
                         }`}>
                         <div className="flex items-center gap-3">
                           {/* Category / Image thumbnail */}
-                          <button type="button" aria-label={item.imageKey ? 'Change photo' : 'Add photo'} title={item.imageKey ? 'Change photo' : 'Add photo'}
+                          <button type="button" aria-label={(item.imageKey || item.imageData) ? 'Change photo' : 'Add photo'} title={(item.imageKey || item.imageData) ? 'Change photo' : 'Add photo'}
                             onClick={() => setPickForItem(item)}
                             className="w-10 h-10 rounded-full flex-shrink-0 overflow-hidden bg-gray-100 dark:bg-gray-700 cursor-pointer relative group">
                             {item.imageKey ? (
                               <img src={`${AI_SCAN_URL}/api/photos/${item.imageKey}`} alt={item.name}
+                                className="w-full h-full object-cover" />
+                            ) : item.imageData ? (
+                              <img src={item.imageData} alt={item.name}
                                 className="w-full h-full object-cover" />
                             ) : (
                               <div className="w-full h-full flex items-center justify-center text-lg"
@@ -2035,6 +2044,8 @@ export default function App() {
                       <div className="w-8 h-8 rounded-full flex-shrink-0 overflow-hidden bg-slate-700">
                         {it.imageKey ? (
                           <img src={`${AI_SCAN_URL}/api/photos/${it.imageKey}`} alt={it.name} className="w-full h-full object-cover" />
+                        ) : it.imageData ? (
+                          <img src={it.imageData} alt={it.name} className="w-full h-full object-cover" />
                         ) : (
                           <div className="w-full h-full flex items-center justify-center text-xs"
                             style={{ background: `${pinColor(it.category)}20`, color: pinColor(it.category) }}>
@@ -2065,7 +2076,7 @@ export default function App() {
                 <button onClick={() => setPickForItem(null)}
                   className="bg-none border-none text-slate-400 cursor-pointer hover:text-slate-200 p-1 rounded transition-colors text-lg">✕</button>
               </div>
-              {pickForItem.imageKey && (
+              {(pickForItem.imageKey || pickForItem.imageData) && (
                 <button onClick={() => removeItemPhoto(pickForItem.id)}
                   className="w-full px-3 py-2 mb-3 text-sm bg-transparent border border-red-500/40 text-red-400 hover:bg-red-500/10 rounded-lg transition-all cursor-pointer">🗑️ Remove current photo</button>
               )}
