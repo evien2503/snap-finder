@@ -463,6 +463,18 @@ function RoomMapPanel({
   const [expanded, setExpanded] = useState(false)
   const itemDragRef = useRef<{ itemId: string; ghost: HTMLElement } | null>(null)
 
+  /* ── Suppress browser no-drop cursor while dragging items ── */
+  useEffect(() => {
+    const onDragover = (e: DragEvent) => {
+      if (e.dataTransfer && Array.from(e.dataTransfer.types).includes('application/x-snap-item')) {
+        e.preventDefault()
+        e.dataTransfer.dropEffect = 'move'
+      }
+    }
+    document.addEventListener('dragover', onDragover)
+    return () => document.removeEventListener('dragover', onDragover)
+  }, [])
+
   /* ── Drag zones ── */
   function startDrag(zoneEl: HTMLElement) {
     if (zoneEl.closest('.map-pin, .zone-delete')) return
@@ -587,7 +599,7 @@ function RoomMapPanel({
                     data-item-id={i.id} data-pin-for={i.id}
                     style={{ background: pinColor(i.category), touchAction: 'none' }}
                     draggable="true"
-                    onDragStart={e => { e.stopPropagation(); e.dataTransfer.setData('text/plain', i.id); e.dataTransfer.effectAllowed = 'move'; document.body.classList.add('dragging-active') }}
+                    onDragStart={e => { e.stopPropagation(); e.dataTransfer.setData('text/plain', i.id); e.dataTransfer.setData('application/x-snap-item', i.id); e.dataTransfer.effectAllowed = 'move'; document.body.classList.add('dragging-active') }}
                     onDragEnd={() => document.body.classList.remove('dragging-active') }
                     onTouchStart={e => { e.stopPropagation(); startPinTouchDrag(e, i.id) }}
                     onClick={e => { e.stopPropagation(); onPinClick(i.id) }}>
@@ -612,7 +624,7 @@ function RoomMapPanel({
               <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 whitespace-nowrap">📦 Unsorted / Off-Map Items</span>
               {unsorted.map(i => (
                 <span key={i.id} data-tray-pill={i.id} draggable="true"
-                  onDragStart={e => { e.dataTransfer.setData('text/plain', i.id); e.dataTransfer.effectAllowed = 'move'; document.body.classList.add('dragging-active') }}
+                  onDragStart={e => { e.dataTransfer.setData('text/plain', i.id); e.dataTransfer.setData('application/x-snap-item', i.id); e.dataTransfer.effectAllowed = 'move'; document.body.classList.add('dragging-active') }}
                   onDragEnd={() => { document.body.classList.remove('dragging-active'); setDropZoneId(null) }}
                   onClick={() => setAssignItemId(assignItemId === i.id ? null : i.id)}
                   className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-full text-gray-700 dark:text-gray-300 whitespace-nowrap cursor-pointer hover:border-blue-500 transition-colors ${
