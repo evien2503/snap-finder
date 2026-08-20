@@ -3,16 +3,16 @@
   "name": "item-location-ai-scan",
   "main": "src/index.ts",
   "compatibility_date": "2025-04-01",
-  "services": [
-    { "binding": "AI", "service": "ai" }
-  ],
+  "ai": {
+    "binding": "AI"
+  },
   "r2_buckets": [
     { "binding": "BUCKET", "bucket_name": "item-photos" }
   ],
   "d1_databases": [
-    { "binding": "SCAN_DB", "database_name": "item-scans", "database_id": "local-dev-placeholder" }
+    { "binding": "SCAN_DB", "database_name": "item-scans", "database_id": "e9806d55-bdf3-4f4e-8676-34a42c092fd5" }
   ],
   "kv_namespaces": [
-    { "binding": "SCAN_KV", "id": "local-dev-placeholder" }
+    { "binding": "SCAN_KV", "id": "207e8dde06d548a8b34f2b15174dcd04" }
   ]
 }

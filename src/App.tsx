@@ -194,22 +194,35 @@ async function sendChat(message: string, items: Item[], rooms: Room[], history: 
   const unsortedCount = items.filter(i => i.zoneX === -50 && i.zoneY === -50).length
 
   const inventoryLines: string[] = []
+  const offMapLines: string[] = []
   groupedByRoom.forEach((roomItems, roomId) => {
     const room = roomMap.get(roomId)
     const zones = room?.zones.map(z => `${z.id}="${z.label}"`).join(', ') || 'none'
-    inventoryLines.push(`## ${room?.name ?? 'Unknown'} [room:${roomId}] (zones: ${zones})`)
-    roomItems.forEach(item => {
+    const onMapItems = roomItems.filter(i => !(i.zoneX === -50 && i.zoneY === -50))
+    const offMapItems = roomItems.filter(i => i.zoneX === -50 && i.zoneY === -50)
+    if (onMapItems.length > 0) {
+      inventoryLines.push(`## ${room?.name ?? 'Unknown'} [room:${roomId}] (zones: ${zones})`)
+      onMapItems.forEach(item => {
+        const lastChecked = Math.round((now - new Date(item.lastConfirmed).getTime()) / (24 * 60 * 60 * 1000))
+        const stale = lastChecked > 3 ? ` ⚠️ last checked ${lastChecked}d ago` : ''
+        inventoryLines.push(`- ${item.name} (${item.category}) — ${item.location} ✅ on map${stale} [id:${item.id}]`)
+      })
+    }
+    offMapItems.forEach(item => {
       const lastChecked = Math.round((now - new Date(item.lastConfirmed).getTime()) / (24 * 60 * 60 * 1000))
       const stale = lastChecked > 3 ? ` ⚠️ last checked ${lastChecked}d ago` : ''
-      const unsorted = item.zoneX === -50 && item.zoneY === -50 ? ' [unsorted]' : ''
-      inventoryLines.push(`- ${item.name} (${item.category}) — ${item.location}${unsorted}${stale} [id:${item.id}]`)
+      offMapLines.push(`- ${item.name} (${item.category}) — ${room?.name ?? 'Unknown'}, ${item.location}${stale} [id:${item.id}]`)
     })
   })
 
-  const statsLine = `Stats: ${items.length} total items across ${rooms.length} rooms, ${unsortedCount} unsorted, ${staleCount} unchecked in 3+ days.`
+  const statsLine = `Stats: ${items.length} total items across ${rooms.length} rooms, ${unsortedCount} off-map (not placed on room map), ${staleCount} unchecked in 3+ days.`
+
+  const offMapSection = offMapLines.length > 0
+    ? `\n\n📦 UNsorted / Off-Map Items (in a room but not visually placed on the map — these need to be pinned):\n${offMapLines.join('\n')}`
+    : ''
 
   const inventoryContext = items.length > 0
-    ? `\n\nUSER'S INVENTORY (${items.length} items in ${rooms.length} rooms):\n${statsLine}\n\n${inventoryLines.join('\n')}`
+    ? `\n\nUSER'S INVENTORY (${items.length} items in ${rooms.length} rooms):\n${statsLine}\n\n${inventoryLines.join('\n')}${offMapSection}`
     : '\n\nUser has no tracked items yet.'
 
   const systemPrompt = `You are a home-organizer assistant. Help users manage, find, and organize their belongings.
@@ -218,9 +231,15 @@ CAPABILITIES:
 - Find items by name, category, room, or partial match.
 - Summarize what's in each room or category.
 - Identify stale/unchecked items that need attention.
-- Suggest where unsorted items should be stored based on their category.
+- Identify off-map items (📦 section) that need to be pinned on the room map.
 - Answer general organization questions (based on your knowledge).
 - When the user asks to move/relocate/assign an item, offer an ACTION.
+
+ITEM STATUS RULES (IMPORTANT):
+- Items marked "✅ on map" under a room ARE sorted and placed on the visual room map. NEVER call these "unsorted". They have a known room AND a specific zone/furniture pin.
+- Items in the "📦 UNsorted / Off-Map Items" section are in a room with a location but NOT visually pinned on the room map. These are the ONLY items you should call "unsorted" or "off-map".
+- When users ask "what's unsorted?" or "what needs sorting?", list ONLY items from the 📦 section.
+- When users ask about items in a room, reference the room listing — those items are already sorted and placed.
 
 RULES:
 - First, think step-by-step inside <reasoning> tags (what the user wants, which items match, analysis).
@@ -694,6 +713,7 @@ export default function App() {
   const [photosFromServer, setPhotosFromServer] = useState<Record<string, any[]> | null>(null)
   const [photosLoading, setPhotosLoading] = useState(false)
   const [assigningPhoto, setAssigningPhoto] = useState<{ id: string; r2Key?: string; imageData?: string } | null>(null)
+  const [assignSearch, setAssignSearch] = useState('')
   const [pickForItem, setPickForItem] = useState<Item | null>(null)
   const [pickSearch, setPickSearch] = useState('')
   const [showConfetti, setShowConfetti] = useState(false)
@@ -709,6 +729,7 @@ export default function App() {
   const chatEndRef = useRef<HTMLDivElement>(null)
   const chatInputRef = useRef<HTMLInputElement>(null)
   const [dismissAlerts, setDismissAlerts] = useState<string[]>([])
+  const [lightboxPhoto, setLightboxPhoto] = useState<{ src: string; alt: string } | null>(null)
   const [showPrompt, setShowPrompt] = useState(false)
   const [promptPlaceholder, setPromptPlaceholder] = useState('')
   const [promptCallback, setPromptCallback] = useState<((v: string | null) => void) | null>(null)
@@ -738,6 +759,8 @@ export default function App() {
   const searchPulseTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pulseTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const scanVideoRef = useRef<HTMLVideoElement | null>(null)
+  const pickFileRef = useRef<HTMLInputElement>(null)
+  const pickFilesRef = useRef<HTMLInputElement>(null)
   const scanStreamRef = useRef<MediaStream | null>(null)
 
   const room = rooms.find(r => r.id === currentRoomId) || rooms[0]
@@ -1179,6 +1202,18 @@ export default function App() {
     setPickForItem(null)
   }
 
+  function handlePickFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file || !pickForItem) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      const dataUrl = reader.result as string
+      attachPhotoToItem(pickForItem.id, undefined, dataUrl)
+    }
+    reader.readAsDataURL(file)
+    e.target.value = ''
+  }
+
   function closeScanner() {
     stopScanCamera(); setScanMode('idle'); setCapturedImage(null); setScanResult(null); setShowCameraScan(false)
   }
@@ -1485,8 +1520,7 @@ export default function App() {
                 }}
                 onFocus={() => setSearchFocused(true)}
                 onBlur={() => setTimeout(() => setSearchFocused(false), 200)}
-                className="w-full px-4 py-3 pr-14 border border-gray-200 dark:border-gray-700 rounded-xl text-sm outline-none focus:border-blue-500 focus:ring-3 focus:ring-blue-500/40 bg-white dark:bg-gray-800 dark:text-gray-100 transition-colors" />
-              <button aria-label="Voice search" onClick={startVoiceSearch} className={`absolute right-9 top-1/2 -translate-y-1/2 bg-none border-none text-base cursor-pointer text-gray-500 dark:text-gray-400 p-1.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors ${isListening ? '!text-red-500 animate-pulse bg-red-500/10' : ''} touch-manipulation`}>{isListening ? '🔴' : '🎤'}</button>
+                className="w-full px-4 py-3 pr-10 border border-gray-200 dark:border-gray-700 rounded-xl text-sm outline-none focus:border-blue-500 focus:ring-3 focus:ring-blue-500/40 bg-white dark:bg-gray-800 dark:text-gray-100 transition-colors" />
               {searchQuery && (
                 <button aria-label="Clear search" onClick={() => { setSearchQuery(''); setGlowingItemId(null); setGlowingZoneId(null); setGlowingRoomIds([]); setAiResults([]) }} className="absolute right-2 top-1/2 -translate-y-1/2 bg-none border-none text-base cursor-pointer text-gray-400 p-1 touch-manipulation">✕</button>
               )}
@@ -1527,9 +1561,9 @@ export default function App() {
                                 <img src={foundItem.imageData} alt={foundItem.name}
                                   className="w-full h-full object-cover" />
                               ) : (
-                                <div className="w-full h-full flex items-center justify-center text-sm"
+                                <div className="w-full h-full flex items-center justify-center text-sm font-semibold"
                                   style={{ background: `${pinColor(result.category)}20`, color: pinColor(result.category) }}>
-                                  {categoryIcon(result.category)}
+                                  {result.category?.[0] || '?'}
                                 </div>
                               )
                             })()}
@@ -1666,23 +1700,34 @@ export default function App() {
                         }`}>
                         <div className="flex items-center gap-3">
                           {/* Category / Image thumbnail */}
-                          <button type="button" aria-label={(item.imageKey || item.imageData) ? 'Change photo' : 'Add photo'} title={(item.imageKey || item.imageData) ? 'Change photo' : 'Add photo'}
-                            onClick={() => setPickForItem(item)}
-                            className="w-10 h-10 rounded-full flex-shrink-0 overflow-hidden bg-gray-100 dark:bg-gray-700 cursor-pointer relative group">
+                          <div className="w-10 h-10 rounded-full flex-shrink-0 overflow-hidden bg-gray-100 dark:bg-gray-700 relative group">
                             {item.imageKey ? (
                               <img src={`${AI_SCAN_URL}/api/photos/${item.imageKey}`} alt={item.name}
-                                className="w-full h-full object-cover" />
+                                className="w-full h-full object-cover cursor-pointer"
+                                onClick={() => setLightboxPhoto({ src: `${AI_SCAN_URL}/api/photos/${item.imageKey}`, alt: item.name })} />
                             ) : item.imageData ? (
                               <img src={item.imageData} alt={item.name}
-                                className="w-full h-full object-cover" />
+                                className="w-full h-full object-cover cursor-pointer"
+                                onClick={() => setLightboxPhoto({ src: item.imageData!, alt: item.name })} />
                             ) : (
-                              <div className="w-full h-full flex items-center justify-center text-lg"
+                              <button type="button" aria-label="Add photo" title="Add photo"
+                                onClick={() => setPickForItem(item)}
+                                className="w-full h-full flex items-center justify-center text-sm font-semibold cursor-pointer"
                                 style={{ background: `${pinColor(item.category)}20`, color: pinColor(item.category) }}>
-                                {categoryIcon(item.category)}
-                              </div>
+                                {item.category?.[0] || '?'}
+                              </button>
                             )}
-                            <span className="absolute inset-0 flex items-center justify-center bg-black/50 text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity">📷</span>
-                          </button>
+                            {(item.imageKey || item.imageData) && (
+                              <button type="button" aria-label="Change photo" title="Change photo"
+                                onClick={() => setPickForItem(item)}
+                                className="absolute inset-0 flex items-center justify-center bg-black/50 text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer">📷</button>
+                            )}
+                            {!item.imageKey && !item.imageData && (
+                              <button type="button" aria-label="Add photo" title="Add photo"
+                                onClick={() => setPickForItem(item)}
+                                className="absolute inset-0 flex items-center justify-center bg-black/50 text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer">📷</button>
+                            )}
+                          </div>
 
                           {/* Main content */}
                           <div className="flex-1 min-w-0">
@@ -1914,24 +1959,26 @@ export default function App() {
                             <span className="text-slate-500 text-xs">{combined.length}</span>
                             <div className="flex-1 border-t border-slate-700/30" />
                           </div>
-                          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5">
+                           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5">
                             {combined.map(item => (
                               <div key={item.id}
-                                className="bg-slate-800 rounded-xl overflow-hidden border border-slate-700 hover:border-blue-500/60 hover:shadow-[0_0_15px_rgba(59,130,246,0.2)] transition-all group cursor-pointer">
-                                <div className="aspect-[4/3] bg-slate-700 relative overflow-hidden">
+                                className="bg-slate-800 rounded-xl overflow-hidden border border-slate-700 hover:border-blue-500/60 hover:shadow-[0_0_15px_rgba(59,130,246,0.2)] transition-all group">
+                                <div className="aspect-[4/3] bg-slate-700 relative overflow-hidden cursor-pointer"
+                                  onClick={() => setLightboxPhoto({ src: item.imageUrl || item.imageData || '', alt: item.name })}>
                                   <img src={item.imageUrl || item.imageData} alt={item.name} className="w-full h-full object-cover" />
                                   {item.aiDetected && (
                                     <span className="absolute top-1.5 left-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-blue-500/80 text-white font-semibold">AI</span>
                                   )}
                                   <div className="absolute inset-0 bg-black/0 group-hover:bg-black/60 transition-colors flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
-                                    <button onClick={() => addScannedToMain(item)}
+                                    <button onClick={(e) => { e.stopPropagation(); addScannedToMain(item) }}
                                       className="px-2.5 py-1.5 bg-emerald-500 text-white text-[11px] rounded-lg cursor-pointer hover:bg-emerald-600 transition-colors touch-manipulation font-semibold">+ Add</button>
-                                    <button onClick={() => {
+                                    <button onClick={(e) => {
+                                      e.stopPropagation()
                                       const parts = item.imageUrl?.split('/api/photos/')
                                       setAssigningPhoto({ id: item.id, r2Key: parts?.length === 2 ? parts[1] : undefined, imageData: item.imageData })
                                     }}
                                       className="px-2.5 py-1.5 bg-blue-500 text-white text-[11px] rounded-lg cursor-pointer hover:bg-blue-600 transition-colors touch-manipulation font-semibold">🔗 Assign</button>
-                                    <button onClick={() => { if (confirm('Delete this scan?')) deleteScannedItem(item.id) }}
+                                    <button onClick={(e) => { e.stopPropagation(); if (confirm('Delete this scan?')) deleteScannedItem(item.id) }}
                                       className="px-2.5 py-1.5 bg-red-500/80 text-white text-[11px] rounded-lg cursor-pointer hover:bg-red-600 transition-colors touch-manipulation">🗑️</button>
                                   </div>
                                 </div>
@@ -1977,24 +2024,26 @@ export default function App() {
                             <span className="text-slate-500 text-xs">{group.length}</span>
                             <div className="flex-1 border-t border-slate-700/30" />
                           </div>
-                          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5">
+                           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5">
                             {group.map(item => (
                               <div key={item.id}
-                                className="bg-slate-800 rounded-xl overflow-hidden border border-slate-700 hover:border-blue-500/60 hover:shadow-[0_0_15px_rgba(59,130,246,0.2)] transition-all group cursor-pointer">
-                                <div className="aspect-[4/3] bg-slate-700 relative overflow-hidden">
+                                className="bg-slate-800 rounded-xl overflow-hidden border border-slate-700 hover:border-blue-500/60 hover:shadow-[0_0_15px_rgba(59,130,246,0.2)] transition-all group">
+                                <div className="aspect-[4/3] bg-slate-700 relative overflow-hidden cursor-pointer"
+                                  onClick={() => setLightboxPhoto({ src: item.imageUrl || item.imageData || '', alt: item.name })}>
                                   <img src={item.imageUrl || item.imageData} alt={item.name} className="w-full h-full object-cover" />
                                   {item.aiDetected && (
                                     <span className="absolute top-1.5 left-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-blue-500/80 text-white font-semibold">AI</span>
                                   )}
                                   <div className="absolute inset-0 bg-black/0 group-hover:bg-black/60 transition-colors flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
-                                    <button onClick={() => addScannedToMain(item)}
+                                    <button onClick={(e) => { e.stopPropagation(); addScannedToMain(item) }}
                                       className="px-2.5 py-1.5 bg-emerald-500 text-white text-[11px] rounded-lg cursor-pointer hover:bg-emerald-600 transition-colors touch-manipulation font-semibold">+ Add</button>
-                                    <button onClick={() => {
+                                    <button onClick={(e) => {
+                                      e.stopPropagation()
                                       const parts = item.imageUrl?.split('/api/photos/')
                                       setAssigningPhoto({ id: item.id, r2Key: parts?.length === 2 ? parts[1] : undefined, imageData: item.imageData })
                                     }}
                                       className="px-2.5 py-1.5 bg-blue-500 text-white text-[11px] rounded-lg cursor-pointer hover:bg-blue-600 transition-colors touch-manipulation font-semibold">🔗 Assign</button>
-                                    <button onClick={() => { if (confirm('Delete this scan?')) deleteScannedItem(item.id) }}
+                                    <button onClick={(e) => { e.stopPropagation(); if (confirm('Delete this scan?')) deleteScannedItem(item.id) }}
                                       className="px-2.5 py-1.5 bg-red-500/80 text-white text-[11px] rounded-lg cursor-pointer hover:bg-red-600 transition-colors touch-manipulation">🗑️</button>
                                   </div>
                                 </div>
@@ -2024,118 +2073,216 @@ export default function App() {
         {assigningPhoto && (
           <div role="dialog" aria-modal="true" aria-label="Assign photo to item"
             className="fixed inset-0 z-[10000] bg-black/50 flex items-center justify-center p-5 animate-[fadeIn_0.15s_ease-out]"
-            onClick={e => { if (e.target === e.currentTarget) setAssigningPhoto(null) }}>
+            onClick={e => { if (e.target === e.currentTarget) { setAssigningPhoto(null); setAssignSearch('') } }}>
             <div className="bg-gray-900 rounded-xl shadow-xl p-5 w-full max-w-sm max-h-[70vh] flex flex-col border border-gray-700">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-slate-100 text-sm font-semibold">🔗 Assign photo to item</h3>
-                <button onClick={() => setAssigningPhoto(null)}
+                <button onClick={() => { setAssigningPhoto(null); setAssignSearch('') }}
                   className="bg-none border-none text-slate-400 cursor-pointer hover:text-slate-200 p-1 rounded transition-colors text-lg">✕</button>
               </div>
-              <input id="assign-search" type="text" placeholder="Search items..." autoComplete="off"
-                className="w-full px-3 py-2 text-sm bg-slate-800 border border-slate-600 rounded-lg text-slate-100 outline-none focus:border-blue-500 mb-3"
-                onInput={e => (e.currentTarget as HTMLInputElement).focus()} />
-              <div className="flex-1 overflow-y-auto space-y-1">
-                {items.length === 0 ? (
-                  <p className="text-slate-500 text-xs text-center py-6">No items yet. Add items first.</p>
-                ) : (
-                  items.map(it => (
-                    <button key={it.id} onClick={() => assignPhotoToItem(assigningPhoto.id, assigningPhoto.r2Key, assigningPhoto.imageData, it.id)}
-                      className="w-full flex items-center gap-3 px-3 py-2.5 bg-slate-800 hover:bg-blue-900/40 border border-slate-700 hover:border-blue-500/50 rounded-lg text-left transition-all cursor-pointer group">
-                      <div className="w-8 h-8 rounded-full flex-shrink-0 overflow-hidden bg-slate-700">
-                        {it.imageKey ? (
-                          <img src={`${AI_SCAN_URL}/api/photos/${it.imageKey}`} alt={it.name} className="w-full h-full object-cover" />
-                        ) : it.imageData ? (
-                          <img src={it.imageData} alt={it.name} className="w-full h-full object-cover" />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center text-xs"
-                            style={{ background: `${pinColor(it.category)}20`, color: pinColor(it.category) }}>
-                            {categoryIcon(it.category)}
-                          </div>
-                        )}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-slate-200 truncate group-hover:text-blue-300 transition-colors">{it.name}</p>
-                        <p className="text-xs text-slate-500">{it.location} · {rooms.find(r => r.id === it.roomId)?.name || 'Unknown'}</p>
-                      </div>
-                    </button>
-                  ))
+              <div className="relative">
+                <input type="text" placeholder="Search items..." autoComplete="off"
+                  value={assignSearch} onChange={e => setAssignSearch(e.target.value)}
+                  autoFocus
+                  className="w-full px-3 py-2 pr-8 text-sm bg-slate-800 border border-slate-600 rounded-lg text-slate-100 outline-none focus:border-blue-500 mb-3" />
+                {assignSearch && (
+                  <button onClick={() => setAssignSearch('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 mb-3 bg-none border-none text-slate-500 hover:text-slate-300 cursor-pointer text-xs">✕</button>
                 )}
+              </div>
+              <div className="flex-1 overflow-y-auto space-y-1">
+                {(() => {
+                  const q = assignSearch.toLowerCase().trim()
+                  const filtered = items.filter(it =>
+                    !q || it.name.toLowerCase().includes(q) || it.location.toLowerCase().includes(q) || it.category.toLowerCase().includes(q)
+                  )
+                  if (items.length === 0) {
+                    return <p className="text-slate-500 text-xs text-center py-6">No items yet. Add items first.</p>
+                  }
+                  if (filtered.length === 0) {
+                    return <p className="text-slate-500 text-xs text-center py-6">No items match "{assignSearch}"</p>
+                  }
+                  /* Sort: items without a photo first, then with photo */
+                  const sorted = [...filtered].sort((a, b) => {
+                    const aHas = !!(a.imageKey || a.imageData)
+                    const bHas = !!(b.imageKey || b.imageData)
+                    if (aHas !== bHas) return aHas ? 1 : -1
+                    return a.name.localeCompare(b.name)
+                  })
+                  return sorted.map(it => {
+                    const hasPhoto = !!(it.imageKey || it.imageData)
+                    return (
+                      <button key={it.id} onClick={() => { assignPhotoToItem(assigningPhoto.id, assigningPhoto.r2Key, assigningPhoto.imageData, it.id); setAssignSearch('') }}
+                        className="w-full flex items-center gap-3 px-3 py-2.5 bg-slate-800 hover:bg-blue-900/40 border border-slate-700 hover:border-blue-500/50 rounded-lg text-left transition-all cursor-pointer group">
+                        <div className="w-8 h-8 rounded-full flex-shrink-0 overflow-hidden bg-slate-700 relative">
+                          {it.imageKey ? (
+                            <img src={`${AI_SCAN_URL}/api/photos/${it.imageKey}`} alt={it.name} className="w-full h-full object-cover" />
+                          ) : it.imageData ? (
+                            <img src={it.imageData} alt={it.name} className="w-full h-full object-cover" />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-xs font-semibold"
+                              style={{ background: `${pinColor(it.category)}20`, color: pinColor(it.category) }}>
+                              {it.category?.[0] || '?'}
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-slate-200 truncate group-hover:text-blue-300 transition-colors">{it.name}</p>
+                          <p className="text-xs text-slate-500">{it.location} · {rooms.find(r => r.id === it.roomId)?.name || 'Unknown'}</p>
+                        </div>
+                        {hasPhoto && (
+                          <span className="flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 font-medium">has photo</span>
+                        )}
+                      </button>
+                    )
+                  })
+                })()}
               </div>
             </div>
           </div>
         )}
 
         {/* ── Add Photo to Item Picker ── */}
-        {pickForItem && (
+        {pickForItem && (() => {
+          const currentPhotoUrl = pickForItem.imageKey ? `${AI_SCAN_URL}/api/photos/${pickForItem.imageKey}` : pickForItem.imageData || null
+          return (
           <div role="dialog" aria-modal="true" aria-label="Add photo to item"
             className="fixed inset-0 z-[10001] bg-black/50 flex items-center justify-center p-5 animate-[fadeIn_0.15s_ease-out]"
-            onClick={e => { if (e.target === e.currentTarget) setPickForItem(null) }}>
-            <div className="bg-gray-900 rounded-xl shadow-xl p-5 w-full max-w-sm max-h-[70vh] flex flex-col border border-gray-700">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-slate-100 text-sm font-semibold">📷 Add photo to {pickForItem.name}</h3>
-                <button onClick={() => setPickForItem(null)}
-                  className="bg-none border-none text-slate-400 cursor-pointer hover:text-slate-200 p-1 rounded transition-colors text-lg">✕</button>
+            onClick={e => { if (e.target === e.currentTarget) { setPickForItem(null); setPickSearch('') } }}>
+            <div className="bg-gray-900 rounded-2xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col border border-gray-700 overflow-hidden">
+              {/* Header */}
+              <div className="flex items-center justify-between px-5 pt-5 pb-3">
+                <h3 className="text-slate-100 text-sm font-semibold">📷 Add photo to <span className="text-blue-400">{pickForItem.name}</span></h3>
+                <button onClick={() => { setPickForItem(null); setPickSearch('') }}
+                  className="bg-none border-none text-slate-400 cursor-pointer hover:text-slate-200 p-1 rounded-lg hover:bg-slate-800 transition-colors text-lg">✕</button>
               </div>
-              {(pickForItem.imageKey || pickForItem.imageData) && (
-                <button onClick={() => removeItemPhoto(pickForItem.id)}
-                  className="w-full px-3 py-2 mb-3 text-sm bg-transparent border border-red-500/40 text-red-400 hover:bg-red-500/10 rounded-lg transition-all cursor-pointer">🗑️ Remove current photo</button>
-              )}
-              <input id="pick-photo-search" type="text" placeholder="Search photos..." autoComplete="off"
-                className="w-full px-3 py-2 text-sm bg-slate-800 border border-slate-600 rounded-lg text-slate-100 outline-none focus:border-blue-500 mb-3"
-                value={pickSearch} onInput={e => setPickSearch((e.currentTarget as HTMLInputElement).value)} />
-              <div className="flex-1 overflow-y-auto space-y-1">
-                {(() => {
-                  const q = pickSearch.toLowerCase()
-                  const used = new Set<string>()
-                  const rows: any[] = []
-                  /* a) Local scanned items */
-                  scannedItems.filter(s => s.imageUrl || s.imageData).forEach(s => {
-                    if (!q || s.name.toLowerCase().includes(q) || s.category.toLowerCase().includes(q) || s.location.toLowerCase().includes(q)) {
+
+              {/* Search */}
+              <div className="px-5 pb-3">
+                <div className="relative">
+                  <input type="text" placeholder="Search photos..." autoComplete="off"
+                    value={pickSearch} onChange={e => setPickSearch(e.target.value)}
+                    className="w-full px-3.5 py-2.5 pr-9 text-sm bg-slate-800 border border-slate-600 rounded-xl text-slate-100 outline-none focus:border-blue-500 transition-colors" />
+                  {pickSearch && (
+                    <button onClick={() => setPickSearch('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 bg-none border-none text-slate-500 hover:text-slate-300 cursor-pointer text-xs p-1">✕</button>
+                  )}
+                </div>
+              </div>
+
+              {/* Photo Grid */}
+              <div className="flex-1 overflow-y-auto px-5 pb-2">
+                <div className="grid grid-cols-3 gap-3">
+                  {/* Camera Card */}
+                  <button onClick={() => pickFileRef.current?.click()}
+                    className="rounded-xl border-2 border-dashed border-gray-600 hover:border-emerald-500 bg-slate-800/50 hover:bg-emerald-500/10 flex flex-col items-center justify-center gap-1.5 cursor-pointer transition-all group p-3 min-h-[140px]">
+                    <div className="w-10 h-10 rounded-full bg-slate-700 group-hover:bg-emerald-500/20 flex items-center justify-center transition-colors">
+                      <span className="text-xl group-hover:scale-110 transition-transform">📷</span>
+                    </div>
+                    <span className="text-[10px] text-slate-500 group-hover:text-emerald-400 font-medium transition-colors">Camera</span>
+                  </button>
+
+                  {/* Files Card */}
+                  <button onClick={() => pickFilesRef.current?.click()}
+                    className="rounded-xl border-2 border-dashed border-gray-600 hover:border-blue-500 bg-slate-800/50 hover:bg-blue-500/10 flex flex-col items-center justify-center gap-1.5 cursor-pointer transition-all group p-3 min-h-[140px]">
+                    <div className="w-10 h-10 rounded-full bg-slate-700 group-hover:bg-blue-500/20 flex items-center justify-center transition-colors">
+                      <span className="text-xl group-hover:scale-110 transition-transform">📁</span>
+                    </div>
+                    <span className="text-[10px] text-slate-500 group-hover:text-blue-400 font-medium transition-colors">Files</span>
+                  </button>
+
+                  {/* Photo Cards — Local */}
+                  {(() => {
+                    const q = pickSearch.toLowerCase()
+                    const used = new Set<string>()
+                    const cards: any[] = []
+
+                    scannedItems.filter(s => s.imageUrl || s.imageData).forEach(s => {
+                      if (q && !s.name.toLowerCase().includes(q) && !s.category.toLowerCase().includes(q) && !s.location.toLowerCase().includes(q)) return
+                      const src = s.imageUrl ?? s.imageData
+                      if (!src) return
                       if (s.imageUrl) used.add(s.imageUrl)
-                      rows.push(
-                        <div key={`local-${s.id}`} className="w-full flex items-center gap-3 px-3 py-2.5 bg-slate-800 hover:bg-blue-900/40 border border-slate-700 hover:border-blue-500/50 rounded-lg text-left transition-all">
-                          <img src={s.imageUrl ?? s.imageData} alt={s.name} className="w-8 h-8 rounded-full flex-shrink-0 object-cover bg-slate-700" />
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-slate-200 truncate">{s.name}</p>
-                            <p className="text-xs text-slate-500">{s.category} · {s.location}</p>
+                      const isSelected = currentPhotoUrl === src
+                      cards.push(
+                        <button key={`local-${s.id}`}
+                          onClick={() => attachPhotoToItem(pickForItem.id, s.imageUrl ? s.imageUrl.split('/api/photos/')[1] : undefined, s.imageData)}
+                          className={`rounded-xl overflow-hidden cursor-pointer border-2 transition-all duration-200 hover:scale-[1.03] hover:shadow-lg hover:shadow-blue-500/20 text-left ${isSelected ? 'border-indigo-500 ring-2 ring-indigo-500/50' : 'border-slate-700 hover:border-blue-500/50'}`}>
+                          <div className="aspect-square bg-slate-700 relative overflow-hidden">
+                            <img src={src} alt={s.name} className="w-full h-full object-cover" />
+                            {isSelected && (
+                              <div className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-indigo-500 flex items-center justify-center shadow-lg">
+                                <span className="text-white text-[11px] font-bold">✓</span>
+                              </div>
+                            )}
                           </div>
-                          <button onClick={() => attachPhotoToItem(pickForItem.id, s.imageUrl ? s.imageUrl.split('/api/photos/')[1] : undefined, s.imageData)}
-                            className="flex-shrink-0 px-2.5 py-1 text-xs font-medium bg-blue-500/20 text-blue-300 border border-blue-500/40 hover:bg-blue-500/40 hover:text-blue-200 rounded-lg transition-all cursor-pointer">Attach</button>
-                        </div>
+                          <div className="p-1.5 bg-slate-800">
+                            <p className="text-slate-100 text-[11px] font-semibold truncate">{s.name}</p>
+                            <p className="text-slate-500 text-[10px] mt-0.5 truncate">{s.category} · {s.location}</p>
+                          </div>
+                        </button>
                       )
-                    }
-                  })
-                  /* b) Server photos (dedupe against already-listed URLs) */
-                  if (photosFromServer) {
-                    Object.values(photosFromServer).flat().forEach((p: any) => {
-                      if (!p || !p.r2_key) return
-                      if (!q || (p.item_name || '').toLowerCase().includes(q) || (p.category || '').toLowerCase().includes(q) || (p.room_location || '').toLowerCase().includes(q)) {
+                    })
+
+                    /* Server photos */
+                    if (photosFromServer) {
+                      Object.values(photosFromServer).flat().forEach((p: any) => {
+                        if (!p || !p.r2_key) return
                         const url = `${AI_SCAN_URL}/api/photos/${p.r2_key}`
                         if (used.has(url)) return
+                        if (q && !(p.item_name || '').toLowerCase().includes(q) && !(p.category || '').toLowerCase().includes(q) && !(p.room_location || '').toLowerCase().includes(q)) return
                         used.add(url)
-                        rows.push(
-                          <div key={`server-${p.r2_key}`} className="w-full flex items-center gap-3 px-3 py-2.5 bg-slate-800 hover:bg-blue-900/40 border border-slate-700 hover:border-blue-500/50 rounded-lg text-left transition-all">
-                            <img src={url} alt={p.item_name || 'Photo'} className="w-8 h-8 rounded-full flex-shrink-0 object-cover bg-slate-700" />
-                            <div className="flex-1 min-w-0">
-                              <p className="text-sm font-medium text-slate-200 truncate">{p.item_name || 'Untitled'}</p>
-                              <p className="text-xs text-slate-500">{p.category || 'Other'} · {p.room_location || 'Scanned'}</p>
+                        const isSelected = currentPhotoUrl === url
+                        cards.push(
+                          <button key={`server-${p.r2_key}`}
+                            onClick={() => attachPhotoToItem(pickForItem.id, p.r2_key, undefined)}
+                            className={`rounded-xl overflow-hidden cursor-pointer border-2 transition-all duration-200 hover:scale-[1.03] hover:shadow-lg hover:shadow-blue-500/20 text-left ${isSelected ? 'border-indigo-500 ring-2 ring-indigo-500/50' : 'border-slate-700 hover:border-blue-500/50'}`}>
+                            <div className="aspect-square bg-slate-700 relative overflow-hidden">
+                              <img src={url} alt={p.item_name || 'Photo'} className="w-full h-full object-cover" />
+                              {isSelected && (
+                                <div className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-indigo-500 flex items-center justify-center shadow-lg">
+                                  <span className="text-white text-[11px] font-bold">✓</span>
+                                </div>
+                              )}
                             </div>
-                            <button onClick={() => attachPhotoToItem(pickForItem.id, p.r2_key, undefined)}
-                              className="flex-shrink-0 px-2.5 py-1 text-xs font-medium bg-blue-500/20 text-blue-300 border border-blue-500/40 hover:bg-blue-500/40 hover:text-blue-200 rounded-lg transition-all cursor-pointer">Attach</button>
-                          </div>
+                            <div className="p-1.5 bg-slate-800">
+                              <p className="text-slate-100 text-[11px] font-semibold truncate">{p.item_name || 'Untitled'}</p>
+                              <p className="text-slate-500 text-[10px] mt-0.5 truncate">{p.category || 'Other'} · {p.room_location || 'Scanned'}</p>
+                            </div>
+                          </button>
                         )
-                      }
-                    })
-                  }
-                  if (rows.length === 0) {
-                    return <p className="text-slate-500 text-xs text-center py-6">No photos found.</p>
-                  }
-                  return rows
-                })()}
+                      })
+                    }
+
+                    return cards
+                  })()}
+                </div>
+
+                {scannedItems.length === 0 && (!photosFromServer || Object.keys(photosFromServer).length === 0) && (
+                  <div className="flex flex-col items-center justify-center py-10 text-slate-500">
+                    <div className="text-4xl mb-2">📸</div>
+                    <p className="text-sm">No photos yet. Upload one to get started.</p>
+                  </div>
+                )}
               </div>
+
+              {/* Footer */}
+              <div className="flex items-center justify-between px-5 py-3 border-t border-gray-700/60 bg-gray-900">
+                {(pickForItem.imageKey || pickForItem.imageData) ? (
+                  <button onClick={() => removeItemPhoto(pickForItem.id)}
+                    className="text-xs text-red-400/80 hover:text-red-400 hover:bg-red-500/10 px-3 py-1.5 rounded-lg transition-colors cursor-pointer">Remove photo</button>
+                ) : <div />}
+                <button onClick={() => { setPickForItem(null); setPickSearch('') }}
+                  className="text-xs text-slate-400 hover:text-slate-200 hover:bg-slate-800 px-3 py-1.5 rounded-lg transition-colors cursor-pointer">Close</button>
+              </div>
+
+              <input ref={pickFileRef} type="file" accept="image/*" capture="environment" className="hidden"
+                onChange={handlePickFileUpload} />
+              <input ref={pickFilesRef} type="file" accept="image/*" className="hidden"
+                onChange={handlePickFileUpload} />
             </div>
           </div>
-        )}
+          )
+        })()}
 
         {/* Add/Edit Modal */}
         {showAddModal && (
@@ -2151,11 +2298,21 @@ export default function App() {
               <form onSubmit={e => {
                 e.preventDefault()
                 const fd = new FormData(e.currentTarget)
-                const name = fd.get('name') as string; const location = fd.get('location') as string; const category = fd.get('category') as string
+                const name = fd.get('name') as string; const category = fd.get('category') as string
                 const roomId = fd.get('roomId') as string
                 const pin = document.getElementById('mini-pin')
                 const zx = pin && pin.style.left ? parseFloat(pin.style.left) : (editingItem?.zoneX ?? 50)
                 const zy = pin && pin.style.top ? parseFloat(pin.style.top) : (editingItem?.zoneY ?? 50)
+                /* Auto-derive location from nearest zone label */
+                const targetRoom = rooms.find(r => r.id === roomId) || room
+                let location = targetRoom.name
+                if (targetRoom.zones.length > 0) {
+                  let minDist = Infinity
+                  targetRoom.zones.forEach(z => {
+                    const dist = Math.hypot(z.x - zx, z.y - zy)
+                    if (dist < minDist) { minDist = dist; location = z.label }
+                  })
+                }
                 if (editingItem) {
                   updateItem(editingItem.id, name, location, category, zx, zy)
                   if (roomId && roomId !== editingItem.roomId) moveItemToRoom(editingItem.id, roomId)
@@ -2166,11 +2323,6 @@ export default function App() {
                 <div className="flex flex-col gap-1.5">
                   <label className="text-xs font-semibold text-gray-700 dark:text-gray-200">Item Name</label>
                   <input name="name" defaultValue={editingItem?.name || ''} placeholder="e.g. Passport, House Keys" required
-                    className="px-4 py-2.5 border border-gray-200 dark:border-gray-600 rounded-lg text-sm outline-none focus:border-blue-500 focus:ring-3 focus:ring-blue-500/40 bg-white dark:bg-gray-700 dark:text-gray-100" />
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-xs font-semibold text-gray-700 dark:text-gray-200">Location</label>
-                  <input name="location" defaultValue={editingItem?.location || ''} placeholder="e.g. Top desk drawer" required
                     className="px-4 py-2.5 border border-gray-200 dark:border-gray-600 rounded-lg text-sm outline-none focus:border-blue-500 focus:ring-3 focus:ring-blue-500/40 bg-white dark:bg-gray-700 dark:text-gray-100" />
                 </div>
                 <div className="flex flex-col gap-1.5">
@@ -2211,6 +2363,23 @@ export default function App() {
                 </button>
               </form>
             </div>
+          </div>
+        )}
+
+        {/* ── Photo Lightbox ── */}
+        {lightboxPhoto && (
+          <div role="dialog" aria-modal="true" aria-label="Enlarged photo"
+            className="fixed inset-0 z-[10002] bg-black/90 flex items-center justify-center p-4 animate-[fadeIn_0.2s_ease-out]"
+            onClick={() => setLightboxPhoto(null)}
+            onKeyDown={e => { if (e.key === 'Escape') setLightboxPhoto(null) }}
+            tabIndex={0} ref={el => el?.focus()}>
+            <button aria-label="Close"
+              className="absolute top-4 right-4 z-10 w-10 h-10 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/20 text-white text-xl cursor-pointer transition-colors backdrop-blur-sm">✕</button>
+            <img src={lightboxPhoto.src} alt={lightboxPhoto.alt}
+              className="max-w-full max-h-[85vh] object-contain rounded-lg shadow-2xl animate-[fadeIn_0.25s_ease-out]"
+              onClick={e => e.stopPropagation()}
+              style={{ cursor: 'zoom-out' }} />
+            <p className="absolute bottom-6 left-0 right-0 text-center text-white/70 text-sm">{lightboxPhoto.alt}</p>
           </div>
         )}
 
