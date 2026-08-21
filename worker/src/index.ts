@@ -16,6 +16,7 @@ export interface Env {
   BUCKET: R2Bucket             // Bindings → R2 for photo storage
   SCAN_KV: KVNamespace          // Bindings → KV for scan log
   SCAN_DB: D1Database           // Bindings → D1 for persistent storage
+  ASSETS: Fetcher               // Bindings → static frontend assets
 }
 
 /* ── CORS ── */
@@ -67,15 +68,19 @@ export default {
         return new Response(JSON.stringify({ error: 'Missing key' }), { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } })
       }
 
-      /* ── Legacy POST-only endpoints ── */
-      if (request.method !== 'POST') return new Response(JSON.stringify({ error: 'POST only' }), { status: 405, headers: { ...CORS, 'Content-Type': 'application/json' } })
+      /* ── API POST endpoints ── */
+      if (path.startsWith('/api/')) {
+        if (request.method !== 'POST') return new Response(JSON.stringify({ error: 'POST only' }), { status: 405, headers: { ...CORS, 'Content-Type': 'application/json' } })
+        if (path === '/api/scan') return handleVisionScan(request, env)
+        if (path === '/api/match') return handleVisionMatch(request, env)
+        if (path === '/api/history') return handleHistory(request, env)
+        if (path === '/api/search') return handleVectorSearch(request, env)
+        if (path === '/api/chat') return handleChat(request, env)
+        return new Response(JSON.stringify({ error: 'Unknown route' }), { status: 404, headers: { ...CORS, 'Content-Type': 'application/json' } })
+      }
 
-      if (path === '/api/scan') return handleVisionScan(request, env)
-      if (path === '/api/match') return handleVisionMatch(request, env)
-      if (path === '/api/history') return handleHistory(request, env)
-      if (path === '/api/search') return handleVectorSearch(request, env)
-      if (path === '/api/chat') return handleChat(request, env)
-      return new Response(JSON.stringify({ error: 'Unknown route' }), { status: 404, headers: { ...CORS, 'Content-Type': 'application/json' } })
+      /* ── Serve frontend static assets (SPA) ── */
+      return env.ASSETS.fetch(request)
     } catch (err: any) {
       return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { ...CORS, 'Content-Type': 'application/json' } })
     }

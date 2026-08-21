@@ -6,6 +6,11 @@
   "ai": {
     "binding": "AI"
   },
+  "assets": {
+    "directory": "../dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
   "r2_buckets": [
     { "binding": "BUCKET", "bucket_name": "item-photos" }
   ],

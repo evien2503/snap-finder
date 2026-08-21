@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import Fuse from 'fuse.js'
 
 /* ── AI Vector Search — Cloudflare Worker ── */
-const AI_SEARCH_URL = import.meta.env.VITE_AI_SEARCH_URL || 'http://localhost:8787'
+const AI_SEARCH_URL = import.meta.env.VITE_AI_SEARCH_URL || ''
 
 interface SearchResult {
   itemId: string; itemName: string; location: string; category: string
@@ -17,7 +17,7 @@ async function aiVectorSearch(
   rooms: Room[]
 ): Promise<SearchResult[]> {
   try {
-    const res = await fetch(`${AI_SEARCH_URL}`, {
+    const res = await fetch(`${AI_SEARCH_URL}/api/search`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query, items, rooms }),
