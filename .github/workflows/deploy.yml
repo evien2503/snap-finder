@@ -20,6 +20,9 @@ jobs:
 
       - name: Build frontend
         run: npm run build
+        env:
+          VITE_AI_KEY: ${{ secrets.VITE_AI_KEY }}
+          VITE_AI_SCAN_URL: ${{ secrets.VITE_AI_SCAN_URL }}
 
       - name: Deploy worker
         working-directory: worker
