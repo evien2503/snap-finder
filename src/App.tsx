@@ -1,35 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import Fuse from 'fuse.js'
 
-/* ── AI Vector Search — Cloudflare Worker ── */
-const AI_SEARCH_URL = import.meta.env.VITE_AI_SEARCH_URL || ''
-
-interface SearchResult {
-  itemId: string; itemName: string; location: string; category: string
-  roomId: string; roomName: string
-  zone: { id: string; label: string; x: number; y: number } | null
-  score: number
-}
-
-async function aiVectorSearch(
-  query: string,
-  items: Item[],
-  rooms: Room[]
-): Promise<SearchResult[]> {
-  try {
-    const res = await fetch(`${AI_SEARCH_URL}/api/search`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, items, rooms }),
-    })
-    if (!res.ok) return []
-    const data = await res.json()
-    return data.results ?? []
-  } catch {
-    return []
-  }
-}
-
 /* ── Types ── */
 
 interface Zone { id: string; label: string; x: number; y: number }
@@ -54,13 +25,6 @@ interface VisionResult {
   distinctFeatures: string[]
   suggestedCategory: string
   description: string
-}
-
-interface MatchResult {
-  match: boolean
-  matchedItem: string | null
-  scanId: string | null
-  confidence: 'high' | 'medium' | 'low'
 }
 
 async function visionScan(base64Image: string, userId: string, roomName = 'Unknown', location = 'Scanned'): Promise<VisionResult | null> {
@@ -98,20 +62,6 @@ async function visionScan(base64Image: string, userId: string, roomName = 'Unkno
       }
     }
     return null
-  } catch {
-    return null
-  }
-}
-
-async function visionMatch(base64Image: string, userId: string): Promise<MatchResult | null> {
-  try {
-    const res = await fetch(`${AI_SCAN_URL}/api/match`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image: base64Image, userId }),
-    })
-    if (!res.ok) return null
-    return await res.json()
   } catch {
     return null
   }
@@ -738,10 +688,7 @@ export default function App() {
   const [authPassword, setAuthPassword] = useState('')
 
   const [searchFocused, setSearchFocused] = useState(false)
-  const [aiResults, setAiResults] = useState<SearchResult[]>([])
-  const [aiThinking, setAiThinking] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
-  const semanticTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const fuse = useMemo(() => new Fuse(items, {
     keys: [
@@ -954,20 +901,18 @@ export default function App() {
 
   function deleteItem(id: string) { setItems(prev => prev.filter(i => i.id !== id)) }
 
-  /* ── Kiosk-Style Intelligent Search (Fuse + AI Vector) ── */
+  /* ── Kiosk-Style Intelligent Search (Fuse local) ── */
+  const [searchLocalResults, setSearchLocalResults] = useState<Item[]>([])
+
   function handleSearch(q: string) {
     if (!q) {
-      setGlowingItemId(null); setGlowingZoneId(null); setGlowingRoomIds([]); setAiResults([]); setSearchFocused(true); return
+      setGlowingItemId(null); setGlowingZoneId(null); setGlowingRoomIds([]); setSearchFocused(true); setSearchLocalResults([]); return
     }
 
     // 1. Fuse fuzzy search — instant local results
     const fuseResults = fuse.search(q)
     const matched = fuseResults.slice(0, 6).map(r => r.item)
-    setAiResults(matched.map(i => ({
-      itemId: i.id, itemName: i.name, location: i.location, category: i.category,
-      roomId: i.roomId, roomName: rooms.find(r => r.id === i.roomId)?.name ?? 'Unknown',
-      zone: null, score: 0.5,
-    })))
+    setSearchLocalResults(matched)
 
     // Highlight best Fuse match in current room
     const inCurrent = matched.filter(i => i.roomId === currentRoomId)
@@ -982,26 +927,6 @@ export default function App() {
 
     if (searchPulseTimer.current) clearTimeout(searchPulseTimer.current)
     searchPulseTimer.current = setTimeout(() => { setGlowingItemId(null); setGlowingZoneId(null) }, 6000)
-
-    // 2. AI vector search (debounced) — semantic synonyms & typos
-    if (semanticTimer.current) clearTimeout(semanticTimer.current)
-    semanticTimer.current = setTimeout(async () => {
-      if (!q.trim()) return
-      setAiThinking(true)
-      const results = await aiVectorSearch(q, items, rooms)
-      setAiThinking(false)
-
-      if (results.length > 0) {
-        setAiResults(results)
-        const top = results[0]
-        setGlowingItemId(top.itemId)
-        if (top.zone) setGlowingZoneId(top.zone.id)
-        glowRoomTab(top.roomId)
-        if (top.roomId !== currentRoomId) setCurrentRoomId(top.roomId)
-        if (searchPulseTimer.current) clearTimeout(searchPulseTimer.current)
-        searchPulseTimer.current = setTimeout(() => { setGlowingItemId(null); setGlowingZoneId(null) }, 6000)
-      }
-    }, 400)
   }
 
   function glowRoomTab(roomId: string) {
@@ -1024,14 +949,16 @@ export default function App() {
     setGlowingZoneId(bestZone)
   }
 
-  function selectAiResult(result: SearchResult) {
-    setSearchQuery(result.itemName)
-    setAiResults([])
+  function selectItem(item: Item) {
+    setSearchQuery(item.name)
+    setSearchLocalResults([])
     setSearchFocused(false)
-    if (result.roomId !== currentRoomId) setCurrentRoomId(result.roomId)
-    setGlowingItemId(result.itemId)
-    if (result.zone) setGlowingZoneId(result.zone.id)
-    glowRoomTab(result.roomId)
+    if (item.roomId !== currentRoomId) setCurrentRoomId(item.roomId)
+    setGlowingItemId(item.id)
+    const rm = rooms.find(r => r.id === item.roomId)
+    const zone = rm?.zones.find(z => Math.abs(item.zoneX - z.x) < 15 && Math.abs(item.zoneY - z.y) < 15)
+    if (zone) setGlowingZoneId(zone.id)
+    glowRoomTab(item.roomId)
     if (searchPulseTimer.current) clearTimeout(searchPulseTimer.current)
     searchPulseTimer.current = setTimeout(() => { setGlowingItemId(null); setGlowingZoneId(null) }, 5000)
   }
@@ -1102,16 +1029,6 @@ export default function App() {
           features: result.distinctFeatures,
         })
         setScanMode('result')
-        // Check if this matches any previously scanned item
-        visionMatch(dataUrl, userRef.current).then(match => {
-          if (match?.match && match.matchedItem) {
-            setScanResult(prev => prev ? {
-              ...prev,
-              name: `${prev.name} (matches: ${match.matchedItem})`,
-              description: `${prev.description} — 🔄 Previously scanned item detected!`,
-            } : prev)
-          }
-        })
       } else {
         setScanResult({ name: '', category: 'Other', description: '⚠️ Scan failed — AI service unavailable. Enter details below', confidence: 'low', features: [] })
         setScanMode('result')
@@ -1355,7 +1272,6 @@ export default function App() {
   useEffect(() => {
     return () => {
       if (recognitionRef.current) try { recognitionRef.current.abort() } catch {}
-      if (semanticTimer.current) clearTimeout(semanticTimer.current)
       if (searchPulseTimer.current) clearTimeout(searchPulseTimer.current)
       if (pulseTimer.current) clearTimeout(pulseTimer.current)
     }
@@ -1496,18 +1412,14 @@ export default function App() {
             {/* Search Bar */}
             <div className="relative mb-1" ref={el => { if (el) { /* container ref for dropdown positioning */ } }}>
               <input ref={searchRef} type="text" placeholder={`Search in ${room.name}...`} value={searchQuery}
-                onChange={e => { setSearchQuery(e.target.value); if (e.target.value) handleSearch(e.target.value); else { setGlowingItemId(null); setGlowingZoneId(null); setGlowingRoomIds([]); setAiResults([]) } }}
+                onChange={e => { setSearchQuery(e.target.value); if (e.target.value) handleSearch(e.target.value); else { setGlowingItemId(null); setGlowingZoneId(null); setGlowingRoomIds([]); setSearchLocalResults([]) } }}
                 onKeyDown={e => {
                   if (e.key === 'Enter' && searchQuery) {
                     if (e.currentTarget instanceof HTMLElement) e.currentTarget.blur()
                     const fuseRes = fuse.search(searchQuery)
                     if (fuseRes.length > 0) {
                       const item = fuseRes[0].item
-                      selectAiResult({
-                        itemId: item.id, itemName: item.name, location: item.location, category: item.category,
-                        roomId: item.roomId, roomName: rooms.find(r => r.id === item.roomId)?.name ?? '',
-                        zone: null, score: 0.5,
-                      })
+                      selectItem(item)
                     }
                   }
                   if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
@@ -1522,30 +1434,23 @@ export default function App() {
                 onBlur={() => setTimeout(() => setSearchFocused(false), 200)}
                 className="w-full px-4 py-3 pr-10 border border-gray-200 dark:border-gray-700 rounded-xl text-sm outline-none focus:border-blue-500 focus:ring-3 focus:ring-blue-500/40 bg-white dark:bg-gray-800 dark:text-gray-100 transition-colors" />
               {searchQuery && (
-                <button aria-label="Clear search" onClick={() => { setSearchQuery(''); setGlowingItemId(null); setGlowingZoneId(null); setGlowingRoomIds([]); setAiResults([]) }} className="absolute right-2 top-1/2 -translate-y-1/2 bg-none border-none text-base cursor-pointer text-gray-400 p-1 touch-manipulation">✕</button>
+                <button aria-label="Clear search" onClick={() => { setSearchQuery(''); setGlowingItemId(null); setGlowingZoneId(null); setGlowingRoomIds([]); setSearchLocalResults([]) }} className="absolute right-2 top-1/2 -translate-y-1/2 bg-none border-none text-base cursor-pointer text-gray-400 p-1 touch-manipulation">✕</button>
               )}
 
               {/* ── Kiosk-Style Search Results Dropdown ── */}
               {searchFocused && searchQuery && (
                 <div aria-live="polite" className="absolute top-full left-0 right-0 mt-1 z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.15)] dark:shadow-[0_8px_32px_rgba(0,0,0,0.4)] overflow-hidden animate-[fadeInUp_0.15s_ease-out]">
-                  {aiThinking && (
-                    <div className="flex items-center gap-2 p-3 text-xs text-blue-500 dark:text-blue-400 border-b border-gray-100 dark:border-gray-700">
-                      <span className="w-3.5 h-3.5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-                      AI Vector Search thinking...
-                    </div>
-                  )}
-                  {aiResults.length === 0 && !aiThinking ? (
+                  {searchLocalResults.length === 0 ? (
                     <div className="p-3 text-xs text-gray-500 dark:text-gray-400 text-center">
-                      {searchQuery.length >= 2 ? 'No matches found. AI searching...' : 'Keep typing...'}
+                      {searchQuery.length >= 2 ? 'No matches found' : 'Keep typing...'}
                     </div>
                   ) : (
-                    aiResults.map((result, idx) => {
-                      const isOther = result.roomId !== currentRoomId
-                      const scorePct = Math.round((result.score ?? 0) * 100)
+                    searchLocalResults.map((item, idx) => {
+                      const isOther = item.roomId !== currentRoomId
                       return (
-                        <button key={result.itemId} data-search-result
+                        <button key={item.id} data-search-result
                           onMouseDown={e => e.preventDefault()}
-                          onClick={() => selectAiResult(result)}
+                          onClick={() => selectItem(item)}
                           className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-all cursor-pointer border-none touch-manipulation ${
                             idx === 0
                               ? 'bg-blue-50/80 dark:bg-blue-900/30 shadow-[inset_0_0_0_1px_rgba(59,130,246,0.3)]'
@@ -1553,62 +1458,46 @@ export default function App() {
                           } ${isOther ? 'border-l-3 border-l-amber-400' : ''}`}>
                           <div className="w-9 h-9 rounded-full flex-shrink-0 overflow-hidden bg-gray-100 dark:bg-gray-700">
                             {(() => {
-                              const foundItem = items.find(it => it.id === result.itemId)
-                              return foundItem?.imageKey ? (
-                                <img src={`${AI_SCAN_URL}/api/photos/${foundItem.imageKey}`} alt={foundItem.name}
+                              return item.imageKey ? (
+                                <img src={`${AI_SCAN_URL}/api/photos/${item.imageKey}`} alt={item.name}
                                   className="w-full h-full object-cover" />
-                              ) : foundItem?.imageData ? (
-                                <img src={foundItem.imageData} alt={foundItem.name}
+                              ) : item.imageData ? (
+                                <img src={item.imageData} alt={item.name}
                                   className="w-full h-full object-cover" />
                               ) : (
                                 <div className="w-full h-full flex items-center justify-center text-sm font-semibold"
-                                  style={{ background: `${pinColor(result.category)}20`, color: pinColor(result.category) }}>
-                                  {result.category?.[0] || '?'}
+                                  style={{ background: `${pinColor(item.category)}20`, color: pinColor(item.category) }}>
+                                  {item.category?.[0] || '?'}
                                 </div>
                               )
                             })()}
                           </div>
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-1.5">
-                              <strong className="text-sm text-gray-900 dark:text-gray-100">{result.itemName}</strong>
+                              <strong className="text-sm text-gray-900 dark:text-gray-100">{item.name}</strong>
                               {idx === 0 && (
                                 <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400 whitespace-nowrap">
-                                  {scorePct >= 80 ? '🏆 Best' : 'Best'}
-                                </span>
-                              )}
-                              {result.zone && (
-                                <span className="text-[10px] font-mono px-1 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400 whitespace-nowrap">
-                                  📍 {result.zone.label}
+                                  Best
                                 </span>
                               )}
                             </div>
                             <div className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
-                              <span>📍 {result.location}</span>
+                              <span>📍 {item.location}</span>
                               <span className="text-gray-300 dark:text-gray-600">·</span>
-                              <span className="text-blue-500 font-medium">{result.roomName}</span>
+                              <span className="text-blue-500 font-medium">{rooms.find(r => r.id === item.roomId)?.name ?? 'Unknown'}</span>
                               {isOther && <span className="text-amber-500 font-medium">↺</span>}
                             </div>
                           </div>
                           <div className="flex flex-col items-end gap-1 flex-shrink-0">
-                            <div className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400">{result.category}</div>
-                            {scorePct > 0 && (
-                              <div className="text-[10px] font-mono text-blue-500 dark:text-blue-400">
-                                {scorePct}%
-                              </div>
-                            )}
+                            <div className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400">{item.category}</div>
                           </div>
                         </button>
                       )
                     })
                   )}
-                  {aiResults.length > 0 && (
-                    <div className="px-4 py-2 text-[10px] text-gray-400 dark:text-gray-500 border-t border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/30 text-center flex items-center justify-center gap-3">
-                      <span>{aiResults.length} result{aiResults.length > 1 ? 's' : ''}</span>
-                      <span className="w-1 h-1 rounded-full bg-gray-300 dark:bg-gray-600" />
-                      <span className="flex items-center gap-1">
-                        <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-                        AI Vector Search
-                      </span>
+                  {searchLocalResults.length > 0 && (
+                    <div className="px-4 py-2 text-[10px] text-gray-400 dark:text-gray-500 border-t border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/30 text-center">
+                      {searchLocalResults.length} result{searchLocalResults.length > 1 ? 's' : ''}
                     </div>
                   )}
                 </div>

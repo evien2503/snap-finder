@@ -3,9 +3,6 @@
   "name": "item-location-ai-scan",
   "main": "src/index.ts",
   "compatibility_date": "2025-04-01",
-  "ai": {
-    "binding": "AI"
-  },
   "assets": {
     "directory": "../dist",
     "binding": "ASSETS",
@@ -16,8 +13,5 @@
   ],
   "d1_databases": [
     { "binding": "SCAN_DB", "database_name": "item-scans", "database_id": "e9806d55-bdf3-4f4e-8676-34a42c092fd5" }
-  ],
-  "kv_namespaces": [
-    { "binding": "SCAN_KV", "id": "207e8dde06d548a8b34f2b15174dcd04" }
   ]
 }
