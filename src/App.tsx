@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import Fuse from 'fuse.js'
+import { supabase } from './lib/supabase'
 
 /* ── Types ── */
 
 interface Zone { id: string; label: string; x: number; y: number }
 interface Room { id: string; name: string; zones: Zone[] }
 interface Item { id: string; name: string; location: string; category: string; roomId: string; createdAt: string; lastConfirmed: string; zoneX: number; zoneY: number; imageKey?: string; imageData?: string }
-interface User { email: string; password: string }
+interface User { id: string; email: string }
 interface ScannedItem {
   id: string; name: string; category: string; location: string
   imageData?: string  // legacy base64 JPEG (fallback if no R2)
@@ -27,7 +28,7 @@ interface VisionResult {
   description: string
 }
 
-async function visionScan(base64Image: string, userId: string, roomName = 'Unknown', location = 'Scanned'): Promise<VisionResult | null> {
+async function visionScan(base64Image: string, roomName = 'Unknown', location = 'Scanned'): Promise<VisionResult | null> {
   /* AI Gateway — mimo v2.5 vision scan */
   if (!AI_GATEWAY_KEY) return null
   try {
@@ -67,12 +68,12 @@ async function visionScan(base64Image: string, userId: string, roomName = 'Unkno
   }
 }
 
-async function fetchScanHistory(userId: string): Promise<any[]> {
+async function fetchScanHistory(): Promise<any[]> {
   try {
+    const headers = await getAuthHeaders()
     const res = await fetch(`${AI_SCAN_URL}/api/history`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId }),
+      headers: { 'Content-Type': 'application/json', ...headers },
     })
     if (!res.ok) return []
     const data = await res.json()
@@ -85,7 +86,6 @@ async function fetchScanHistory(userId: string): Promise<any[]> {
 /* ── R2 Photo Upload / Fetch ── */
 async function uploadPhoto(
   base64Image: string,
-  userId: string,
   itemName: string,
   category: string,
   roomLocation: string
@@ -98,12 +98,12 @@ async function uploadPhoto(
 
     const form = new FormData()
     form.append('image', file)
-    form.append('userId', userId)
     form.append('itemName', itemName)
     form.append('category', category)
     form.append('roomLocation', roomLocation)
 
-    const res = await fetch(`${AI_SCAN_URL}/api/photos/upload`, { method: 'POST', body: form })
+    const authHeaders = await getAuthHeaders()
+    const res = await fetch(`${AI_SCAN_URL}/api/photos/upload`, { method: 'POST', headers: authHeaders, body: form })
     if (!res.ok) return null
     return await res.json()
   } catch {
@@ -111,9 +111,10 @@ async function uploadPhoto(
   }
 }
 
-async function fetchPhotos(userId: string): Promise<{ categories: Record<string, any[]>; total: number }> {
+async function fetchPhotos(): Promise<{ categories: Record<string, any[]>; total: number }> {
   try {
-    const res = await fetch(`${AI_SCAN_URL}/api/photos?userId=${encodeURIComponent(userId)}`)
+    const authHeaders = await getAuthHeaders()
+    const res = await fetch(`${AI_SCAN_URL}/api/photos`, { headers: authHeaders })
     if (!res.ok) return { categories: {}, total: 0 }
     return await res.json()
   } catch {
@@ -344,12 +345,11 @@ const QUICK_CHIPS = [
 
 function storageKey(user: string) { return `ilf_data_${user}` }
 
-function hashPass(pw: string): string {
-  let h = 0; for (let i = 0; i < pw.length; i++) { const c = pw.charCodeAt(i); h = ((h << 5) - h) + c; h |= 0 }
-  return btoa(String(h))
+async function getAuthHeaders(): Promise<Record<string, string>> {
+  const { data } = await supabase.auth.getSession()
+  const token = data.session?.access_token
+  return token ? { 'Authorization': `Bearer ${token}` } : {}
 }
-function getUsers(): User[] { return JSON.parse(localStorage.getItem('ilf_users') || '[]') }
-function saveUsers(users: User[]) { localStorage.setItem('ilf_users', JSON.stringify(users)) }
 
 function isValidDate(value: unknown): value is string {
   if (!value || typeof value !== 'string') return false
@@ -683,9 +683,9 @@ export default function App() {
   const [showPrompt, setShowPrompt] = useState(false)
   const [promptPlaceholder, setPromptPlaceholder] = useState('')
   const [promptCallback, setPromptCallback] = useState<((v: string | null) => void) | null>(null)
-  const [isSignUp, setIsSignUp] = useState(false)
   const [authEmail, setAuthEmail] = useState('')
-  const [authPassword, setAuthPassword] = useState('')
+  const [otpSent, setOtpSent] = useState(false)
+  const [otpCode, setOtpCode] = useState('')
 
   const [searchFocused, setSearchFocused] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
@@ -738,7 +738,7 @@ export default function App() {
   /* ── Data persistence ── */
   function save() {
     if (!user) return
-    localStorage.setItem(storageKey(user.email), JSON.stringify({ rooms, items, currentRoomId, scannedItems }))
+    localStorage.setItem(storageKey(user.id), JSON.stringify({ rooms, items, currentRoomId, scannedItems }))
   }
 
   useEffect(() => { if (user) save() }, [rooms, items, currentRoomId, scannedItems])
@@ -746,7 +746,7 @@ export default function App() {
   useEffect(() => {
     if (showScannedGallery) {
       setPhotosLoading(true)
-      fetchPhotos(userRef.current).then(data => {
+      fetchPhotos().then(data => {
         setPhotosFromServer(data.categories)
         setPhotosLoading(false)
       })
@@ -756,13 +756,13 @@ export default function App() {
 
   useEffect(() => {
     if (pickForItem) {
-      fetchPhotos(userRef.current).then(data => setPhotosFromServer(data.categories)).catch(() => {})
+      fetchPhotos().then(data => setPhotosFromServer(data.categories)).catch(() => {})
       syncHistory()
     }
   }, [pickForItem])
 
   function loadData(u: User) {
-    const raw = localStorage.getItem(storageKey(u.email))
+    const raw = localStorage.getItem(storageKey(u.id))
     if (!raw) {
       if (!localStorage.getItem('ilf_onboarded')) {
         setRooms(JSON.parse(JSON.stringify(DEFAULT_ROOMS)))
@@ -800,56 +800,36 @@ export default function App() {
   }
 
   /* ── Auth ── */
-  function signUp() {
-    const users = getUsers()
-    if (users.find(u => u.email === authEmail)) { setAuthError('Email already registered'); return }
-    const hp = hashPass(authPassword)
-    users.push({ email: authEmail, password: hp })
-    saveUsers(users)
-    const u: User = { email: authEmail, password: hp }
-    setUser(u); userRef.current = u.email
-    loadData(u)
-    setAuthError(''); setPage('dashboard')
+  async function sendOtp() {
+    if (!authEmail.trim()) { setAuthError('Enter your email'); return }
+    setAuthError('')
+    const { error } = await supabase.auth.signInWithOtp({ email: authEmail.trim() })
+    if (error) { setAuthError(error.message); return }
+    setOtpSent(true)
   }
 
-  function signIn() {
-    const users = getUsers()
-    let u = users.find(us => us.email === authEmail && us.password === hashPass(authPassword))
-    // Backward compat: also check plaintext passwords (pre-hash migration)
-    if (!u) {
-      const legacy = users.find(us => us.email === authEmail && us.password === authPassword)
-      if (legacy) {
-        legacy.password = hashPass(authPassword) // migrate to hash
-        saveUsers(users)
-        u = legacy
-      }
+  async function verifyOtp() {
+    if (!otpCode.trim()) { setAuthError('Enter the OTP code'); return }
+    setAuthError('')
+    const { data, error } = await supabase.auth.verifyOtp({
+      email: authEmail.trim(),
+      token: otpCode.trim(),
+      type: 'email',
+    })
+    if (error) { setAuthError(error.message); return }
+    if (data.user) {
+      const u: User = { id: data.user.id, email: data.user.email || authEmail }
+      setUser(u); userRef.current = u.id
+      loadData(u)
+      setAuthError(''); setPage('dashboard')
     }
-    if (!u) { setAuthError('Invalid email or password'); return }
-    setUser(u); userRef.current = u.email
-    loadData(u)
-    setAuthError(''); setPage('dashboard')
-  }
-
-  function forgotPassword() {
-    const email = window.prompt('Enter your account email:', authEmail || '')
-    if (email === null || !email.trim()) return
-    const users = getUsers()
-    const u = users.find(us => us.email === email.trim())
-    if (!u) { setAuthError('No account found for that email'); return }
-    const newPw = window.prompt('Enter your new password (at least 4 characters):')
-    if (newPw === null) return
-    if (newPw.length < 4) { setAuthError('Password must be at least 4 characters'); return }
-    const confirm = window.prompt('Confirm your new password:')
-    if (confirm !== newPw) { setAuthError('Passwords do not match'); return }
-    u.password = hashPass(newPw)
-    saveUsers(users)
-    setAuthError('Password reset! Sign in with your new password.')
-    setAuthPassword('')
   }
 
   function signOut() {
     stopScanCamera()
+    supabase.auth.signOut()
     setUser(null); setItems([]); setRooms([]); setScannedItems([]); setAuthError(''); setShowOnboarding(false); setPage('auth')
+    setOtpSent(false); setOtpCode('')
   }
 
   /* ── Room & Item CRUD ── */
@@ -1019,7 +999,7 @@ export default function App() {
     stopScanCamera()
     // Auto-analyze with AI via Cloudflare Worker
     setScanMode('analyzing')
-    visionScan(dataUrl, userRef.current, room.name, 'Scanned').then(result => {
+    visionScan(dataUrl, room.name, 'Scanned').then(result => {
       if (result) {
         setScanResult({
           name: result.itemName,
@@ -1041,7 +1021,7 @@ export default function App() {
     const newItemId = crypto.randomUUID()
     const mainItemId = crypto.randomUUID()
     /* Fire-and-forget R2 upload — never blocks camera close */
-    uploadPhoto(capturedImage, userRef.current, name || 'Unknown Item', category, 'Scanned').then(upload => {
+    uploadPhoto(capturedImage, name || 'Unknown Item', category, 'Scanned').then(upload => {
       if (upload) {
         setScannedItems(prev => prev.map(p => p.id === newItemId ? { ...p, imageUrl: `${AI_SCAN_URL}/api/photos/${upload.r2Key}`, imageData: undefined } : p))
         setItems(prev => prev.map(p => p.id === mainItemId ? { ...p, imageKey: upload.r2Key, imageData: undefined } : p))
@@ -1090,7 +1070,7 @@ export default function App() {
     } else if (imageData) {
       /* Local base64 — apply immediately; upgrade to R2 in background if worker is up */
       setItems(prev => prev.map(i => i.id === targetItemId ? { ...i, imageData } : i))
-      uploadPhoto(imageData, userRef.current, 'Assigned Photo', 'Other', 'Scanned').then(upload => {
+      uploadPhoto(imageData, 'Assigned Photo', 'Other', 'Scanned').then(upload => {
         if (upload) {
           setItems(prev => prev.map(i => i.id === targetItemId ? { ...i, imageKey: upload.r2Key, imageData: undefined } : i))
           setScannedItems(prev => prev.map(s => s.id === photoId ? { ...s, imageUrl: `${AI_SCAN_URL}/api/photos/${upload.r2Key}`, imageData: undefined } : s))
@@ -1107,7 +1087,7 @@ export default function App() {
     } else if (imageData) {
       /* Local base64 — apply immediately; upgrade to R2 in background if worker is up */
       setItems(prev => prev.map(i => i.id === itemId ? { ...i, imageData } : i))
-      uploadPhoto(imageData, userRef.current, 'Assigned Photo', 'Other', 'Scanned').then(upload => {
+      uploadPhoto(imageData, 'Assigned Photo', 'Other', 'Scanned').then(upload => {
         if (upload) setItems(prev => prev.map(i => i.id === itemId ? { ...i, imageKey: upload.r2Key, imageData: undefined } : i))
       }).catch(() => {})
     }
@@ -1141,14 +1121,14 @@ export default function App() {
   }
 
   async function syncHistory() {
-    const scans = await fetchScanHistory(userRef.current)
+    const scans = await fetchScanHistory()
     if (scans.length === 0) return
 
     const mapped = await Promise.all(scans.map(async (s: any) => {
       /* Lazy-migrate legacy base64 images to R2 */
       let imageUrl = s.imageUrl as string | undefined
       if (s.image_b64 && !imageUrl) {
-        const upload = await uploadPhoto(s.image_b64, userRef.current, s.item_name, s.suggested_category || 'Other', s.location || 'Scanned')
+        const upload = await uploadPhoto(s.image_b64, s.item_name, s.suggested_category || 'Other', s.location || 'Scanned')
         if (upload) imageUrl = `${AI_SCAN_URL}/api/photos/${upload.r2Key}`
       }
       return {
@@ -1268,6 +1248,26 @@ export default function App() {
     })
   }
 
+  /* ── Restore Supabase session on mount ── */
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) {
+        const u: User = { id: session.user.id, email: session.user.email || '' }
+        setUser(u); userRef.current = u.id; setPage('dashboard')
+        loadData(u)
+      }
+    })
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user) {
+        const u: User = { id: session.user.id, email: session.user.email || '' }
+        setUser(u); userRef.current = u.id
+      } else {
+        setUser(null); userRef.current = 'anonymous'
+      }
+    })
+    return () => subscription.unsubscribe()
+  }, [])
+
   /* ── Cleanup on unmount ── */
   useEffect(() => {
     return () => {
@@ -1287,31 +1287,39 @@ export default function App() {
             <h1 className="text-2xl font-bold bg-gradient-to-r from-[#3b82f6] to-[#2563eb] bg-clip-text text-transparent mb-1">📍 Item Location Finder</h1>
             <p className="text-gray-500 dark:text-gray-400 text-sm">Never lose track of your important items</p>
           </div>
-          <form onSubmit={e => { e.preventDefault(); isSignUp ? signUp() : signIn() }} className="flex flex-col gap-4">
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold text-gray-700 dark:text-gray-200">Email</label>
-              <input type="email" placeholder="you@example.com" value={authEmail} onChange={e => setAuthEmail(e.target.value)}
-                className="px-4 py-3 border border-gray-200 dark:border-gray-600 rounded-lg text-sm outline-none focus:border-blue-500 focus:ring-3 focus:ring-blue-500/40 bg-white dark:bg-gray-700 dark:text-gray-100 transition-colors" required />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold text-gray-700 dark:text-gray-200">Password</label>
-              <input type="password" placeholder="Enter password" value={authPassword} onChange={e => setAuthPassword(e.target.value)}
-                className="px-4 py-3 border border-gray-200 dark:border-gray-600 rounded-lg text-sm outline-none focus:border-blue-500 focus:ring-3 focus:ring-blue-500/40 bg-white dark:bg-gray-700 dark:text-gray-100 transition-colors" required />
-            </div>
-            {!isSignUp && (
-              <div className="flex justify-end -mt-1">
-                <button type="button" onClick={() => forgotPassword()} className="text-xs text-blue-500 hover:opacity-80 text-right cursor-pointer">Forgot password?</button>
+          {!otpSent ? (
+            <form onSubmit={e => { e.preventDefault(); sendOtp() }} className="flex flex-col gap-4">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-gray-700 dark:text-gray-200">Email</label>
+                <input type="email" placeholder="you@example.com" value={authEmail} onChange={e => setAuthEmail(e.target.value)}
+                  className="px-4 py-3 border border-gray-200 dark:border-gray-600 rounded-lg text-sm outline-none focus:border-blue-500 focus:ring-3 focus:ring-blue-500/40 bg-white dark:bg-gray-700 dark:text-gray-100 transition-colors" required />
               </div>
-            )}
-            {authError && <p role="alert" className="text-red-500 dark:text-red-400 text-sm text-center bg-red-50 dark:bg-red-900/30 py-2 px-3 rounded-md">{authError}</p>}
-            <button type="submit" className="w-full py-3 bg-blue-500 hover:bg-blue-600 text-white font-semibold rounded-lg transition-all hover:-translate-y-0.5 hover:shadow-md active:translate-y-0 cursor-pointer touch-manipulation">
-              {isSignUp ? 'Create Account' : 'Sign In'}
-            </button>
-          </form>
-          <p className="text-center mt-5 text-sm text-gray-500 dark:text-gray-400">
-            {isSignUp ? 'Already have an account?' : "Don't have an account?"}{' '}
-            <button onClick={() => setIsSignUp(!isSignUp)} className="text-blue-500 font-semibold hover:opacity-80 transition-opacity cursor-pointer">{isSignUp ? 'Sign In' : 'Sign Up'}</button>
-          </p>
+              {authError && <p role="alert" className="text-red-500 dark:text-red-400 text-sm text-center bg-red-50 dark:bg-red-900/30 py-2 px-3 rounded-md">{authError}</p>}
+              <button type="submit" className="w-full py-3 bg-blue-500 hover:bg-blue-600 text-white font-semibold rounded-lg transition-all hover:-translate-y-0.5 hover:shadow-md active:translate-y-0 cursor-pointer touch-manipulation">
+                Send OTP Code
+              </button>
+            </form>
+          ) : (
+            <form onSubmit={e => { e.preventDefault(); verifyOtp() }} className="flex flex-col gap-4">
+              <p className="text-sm text-gray-500 dark:text-gray-400 text-center">
+                Code sent to <span className="font-semibold text-gray-700 dark:text-gray-200">{authEmail}</span>
+              </p>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-gray-700 dark:text-gray-200">6-Digit Code</label>
+                <input type="text" inputMode="numeric" pattern="[0-9]*" maxLength={6} placeholder="000000" value={otpCode}
+                  onChange={e => setOtpCode(e.target.value.replace(/\D/g, ''))}
+                  className="px-4 py-3 border border-gray-200 dark:border-gray-600 rounded-lg text-sm outline-none focus:border-blue-500 focus:ring-3 focus:ring-blue-500/40 bg-white dark:bg-gray-700 dark:text-gray-100 transition-colors text-center tracking-[0.5em] text-lg font-mono" required autoFocus />
+              </div>
+              {authError && <p role="alert" className="text-red-500 dark:text-red-400 text-sm text-center bg-red-50 dark:bg-red-900/30 py-2 px-3 rounded-md">{authError}</p>}
+              <button type="submit" className="w-full py-3 bg-blue-500 hover:bg-blue-600 text-white font-semibold rounded-lg transition-all hover:-translate-y-0.5 hover:shadow-md active:translate-y-0 cursor-pointer touch-manipulation">
+                Verify & Sign In
+              </button>
+              <button type="button" onClick={() => { setOtpSent(false); setOtpCode(''); setAuthError('') }}
+                className="text-sm text-blue-500 hover:opacity-80 transition-opacity cursor-pointer text-center">
+                ← Use a different email
+              </button>
+            </form>
+          )}
         </div>
       </div>
     )

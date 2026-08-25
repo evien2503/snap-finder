@@ -6,22 +6,48 @@
  * - GET  /api/photos/:key   : Serve photo from R2
  * - POST /api/history       : Scan history from D1
  *
+ * All /api/* routes require a valid Supabase JWT (Bearer token).
+ *
  * Deploy:
  *   npm create cloudflare -- worker
  *   wrangler deploy
+ *   wrangler secret put SUPABASE_JWT_SECRET
  */
 
+import { verifySupabaseJwt, extractBearerToken } from './auth'
+
 export interface Env {
-  BUCKET: R2Bucket             // Bindings → R2 for photo storage
-  SCAN_DB: D1Database           // Bindings → D1 for persistent storage
-  ASSETS: Fetcher               // Bindings → static frontend assets
+  BUCKET: R2Bucket
+  SCAN_DB: D1Database
+  ASSETS: Fetcher
+  SUPABASE_JWT_SECRET: string
 }
 
 /* ── CORS ── */
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+}
+
+/* ── Auth helper: extract userId from JWT or return 401 ── */
+async function authenticate(request: Request, env: Env): Promise<string | Response> {
+  const token = extractBearerToken(request)
+  if (!token) {
+    return new Response(JSON.stringify({ error: 'Missing authorization token' }), {
+      status: 401,
+      headers: { ...CORS, 'Content-Type': 'application/json' },
+    })
+  }
+  try {
+    const user = await verifySupabaseJwt(token, env.SUPABASE_JWT_SECRET)
+    return user.sub
+  } catch {
+    return new Response(JSON.stringify({ error: 'Invalid or expired token' }), {
+      status: 401,
+      headers: { ...CORS, 'Content-Type': 'application/json' },
+    })
+  }
 }
 
 /* ── Router ── */
@@ -33,19 +59,25 @@ export default {
     const path = url.pathname
 
     try {
-      /* ── Photo endpoints (GET + POST) ── */
-      if (path === '/api/photos/upload' && request.method === 'POST') return handlePhotoUpload(request, env)
-      if (path === '/api/photos' && request.method === 'GET') return handleListPhotos(request, env)
-      if (path.startsWith('/api/photos/') && request.method === 'GET') {
-        const key = path.slice('/api/photos/'.length)
-        if (key) return handleServePhoto(key, env)
-        return new Response(JSON.stringify({ error: 'Missing key' }), { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } })
-      }
-
-      /* ── API POST endpoints ── */
+      /* ── API routes (require auth) ── */
       if (path.startsWith('/api/')) {
+        // Auth check for all API routes except OPTIONS
+        const authResult = await authenticate(request, env)
+        if (authResult instanceof Response) return authResult
+        const userId = authResult
+
+        /* Photo endpoints */
+        if (path === '/api/photos/upload' && request.method === 'POST') return handlePhotoUpload(request, env, userId)
+        if (path === '/api/photos' && request.method === 'GET') return handleListPhotos(env, userId)
+        if (path.startsWith('/api/photos/') && request.method === 'GET') {
+          const key = path.slice('/api/photos/'.length)
+          if (key) return handleServePhoto(key, env)
+          return new Response(JSON.stringify({ error: 'Missing key' }), { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } })
+        }
+
+        /* POST endpoints */
         if (request.method !== 'POST') return new Response(JSON.stringify({ error: 'POST only' }), { status: 405, headers: { ...CORS, 'Content-Type': 'application/json' } })
-        if (path === '/api/history') return handleHistory(request, env)
+        if (path === '/api/history') return handleHistory(request, env, userId)
         return new Response(JSON.stringify({ error: 'Unknown route' }), { status: 404, headers: { ...CORS, 'Content-Type': 'application/json' } })
       }
 
@@ -58,10 +90,9 @@ export default {
 }
 
 /* ════════════════════════════════════════════════════
-   1.  SCAN HISTORY  —  /api/history
+   1.  SCAN HISTORY  —  POST /api/history
    ════════════════════════════════════════════════════ */
-async function handleHistory(request: Request, env: Env): Promise<Response> {
-  const { userId = 'anonymous' } = await request.json()
+async function handleHistory(request: Request, env: Env, userId: string): Promise<Response> {
   const { results } = await env.SCAN_DB.prepare(
     'SELECT id, item_name, confidence, distinct_features, suggested_category, description, room_name, location, created_at FROM scans WHERE user_id = ?1 ORDER BY created_at DESC LIMIT 50'
   ).bind(userId).all()
@@ -74,14 +105,13 @@ async function handleHistory(request: Request, env: Env): Promise<Response> {
 /* ════════════════════════════════════════════════════
    2.  PHOTO UPLOAD  —  POST /api/photos/upload
    ════════════════════════════════════════════════════ */
-async function handlePhotoUpload(request: Request, env: Env): Promise<Response> {
+async function handlePhotoUpload(request: Request, env: Env, userId: string): Promise<Response> {
   const form = await request.formData()
   const file = form.get('image') as File | null
   if (!file) {
     return new Response(JSON.stringify({ error: 'Missing image file' }), { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } })
   }
 
-  const userId  = (form.get('userId') as string) || 'anonymous'
   const itemName = (form.get('itemName') as string) || 'Unknown Item'
   const category = (form.get('category') as string) || 'Other'
   const roomLocation = (form.get('roomLocation') as string) || 'Scanned'
@@ -108,12 +138,9 @@ async function handlePhotoUpload(request: Request, env: Env): Promise<Response> 
 }
 
 /* ════════════════════════════════════════════════════
-   3.  LIST PHOTOS  —  GET /api/photos?userId=...
+   3.  LIST PHOTOS  —  GET /api/photos
    ════════════════════════════════════════════════════ */
-async function handleListPhotos(request: Request, env: Env): Promise<Response> {
-  const url = new URL(request.url)
-  const userId = url.searchParams.get('userId') || 'anonymous'
-
+async function handleListPhotos(env: Env, userId: string): Promise<Response> {
   const { results } = await env.SCAN_DB.prepare(
     'SELECT id, r2_key, item_name, category, room_location, created_at FROM photos WHERE user_id = ?1 ORDER BY created_at DESC'
   ).bind(userId).all()
