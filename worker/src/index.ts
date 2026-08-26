@@ -17,7 +17,7 @@
 import { verifySupabaseJwt, extractBearerToken } from './auth'
 
 export interface Env {
-  BUCKET: R2Bucket
+  BUCKET?: R2Bucket
   SCAN_DB: D1Database
   ASSETS: Fetcher
   SUPABASE_JWT_SECRET: string
@@ -106,6 +106,10 @@ async function handleHistory(request: Request, env: Env, userId: string): Promis
    2.  PHOTO UPLOAD  —  POST /api/photos/upload
    ════════════════════════════════════════════════════ */
 async function handlePhotoUpload(request: Request, env: Env, userId: string): Promise<Response> {
+  if (!env.BUCKET) {
+    return new Response(JSON.stringify({ error: 'Photo storage not configured' }), { status: 503, headers: { ...CORS, 'Content-Type': 'application/json' } })
+  }
+
   const form = await request.formData()
   const file = form.get('image') as File | null
   if (!file) {
@@ -162,6 +166,10 @@ async function handleListPhotos(env: Env, userId: string): Promise<Response> {
    4.  SERVE PHOTO  —  GET /api/photos/<r2_key>
    ════════════════════════════════════════════════════ */
 async function handleServePhoto(key: string, env: Env): Promise<Response> {
+  if (!env.BUCKET) {
+    return new Response(JSON.stringify({ error: 'Photo storage not configured' }), { status: 503, headers: { ...CORS, 'Content-Type': 'application/json' } })
+  }
+
   const object = await env.BUCKET.get(key)
   if (!object) {
     return new Response(JSON.stringify({ error: 'Photo not found' }), { status: 404, headers: { ...CORS, 'Content-Type': 'application/json' } })

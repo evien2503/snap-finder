@@ -28,6 +28,6 @@ jobs:
 
       - name: Deploy worker
         working-directory: worker
-        run: npx wrangler deploy
+        run: npx wrangler deploy --config wrangler.ci.jsonc
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
