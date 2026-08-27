@@ -89,11 +89,17 @@ async function uploadPhoto(
   itemName: string,
   category: string,
   roomLocation: string
-): Promise<{ id: string; r2Key: string } | null> {
+): Promise<{ id: string; r2Key: string; error?: string } | null> {
   try {
     /* Convert base64 → Blob → File for FormData */
     const blobResp = await fetch(base64Image)
     const blob = await blobResp.blob()
+
+    /* Client-side file size check */
+    if (blob.size > 10 * 1024 * 1024) {
+      return { id: '', r2Key: '', error: 'Image too large (max 10MB)' }
+    }
+
     const file = new File([blob], `scan_${Date.now()}.jpg`, { type: 'image/jpeg' })
 
     const form = new FormData()
@@ -103,11 +109,27 @@ async function uploadPhoto(
     form.append('roomLocation', roomLocation)
 
     const authHeaders = await getAuthHeaders()
-    const res = await fetch(`${AI_SCAN_URL}/api/photos/upload`, { method: 'POST', headers: authHeaders, body: form })
-    if (!res.ok) return null
+
+    /* Retry once on network failure */
+    let res: Response | null = null
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        res = await fetch(`${AI_SCAN_URL}/api/photos/upload`, { method: 'POST', headers: authHeaders, body: form })
+        break
+      } catch (err) {
+        if (attempt === 1) {
+          return { id: '', r2Key: '', error: 'Network error — check your connection' }
+        }
+        await new Promise(r => setTimeout(r, 1000))
+      }
+    }
+    if (!res || !res.ok) {
+      const msg = res ? `Upload failed (${res.status})` : 'Upload failed'
+      return { id: '', r2Key: '', error: msg }
+    }
     return await res.json()
   } catch {
-    return null
+    return { id: '', r2Key: '', error: 'Unexpected upload error' }
   }
 }
 
@@ -656,6 +678,8 @@ export default function App() {
   const [editingItem, setEditingItem] = useState<Item | null>(null)
   const [showCameraScan, setShowCameraScan] = useState(false)
   const [scanMode, setScanMode] = useState<'idle' | 'camera' | 'captured' | 'analyzing' | 'result'>('idle')
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState<string | null>(null)
   const [capturedImage, setCapturedImage] = useState<string | null>(null)
   const [scanResult, setScanResult] = useState<{ name: string; category: string; description: string; confidence?: string; features?: string[] } | null>(null)
   const [scannedItems, setScannedItems] = useState<ScannedItem[]>([])
@@ -749,14 +773,14 @@ export default function App() {
       fetchPhotos().then(data => {
         setPhotosFromServer(data.categories)
         setPhotosLoading(false)
-      })
+      }).catch(err => { console.warn('Failed to load photos:', err); setPhotosLoading(false) })
       syncHistory()
     }
   }, [showScannedGallery])
 
   useEffect(() => {
     if (pickForItem) {
-      fetchPhotos().then(data => setPhotosFromServer(data.categories)).catch(() => {})
+      fetchPhotos().then(data => setPhotosFromServer(data.categories)).catch(err => console.warn('Failed to load photos:', err))
       syncHistory()
     }
   }, [pickForItem])
@@ -1021,12 +1045,15 @@ export default function App() {
     const newItemId = crypto.randomUUID()
     const mainItemId = crypto.randomUUID()
     /* Fire-and-forget R2 upload — never blocks camera close */
+    setUploading(true); setUploadError(null)
     uploadPhoto(capturedImage, name || 'Unknown Item', category, 'Scanned').then(upload => {
+      setUploading(false)
       if (upload) {
+        if (upload.error) { setUploadError(upload.error); return }
         setScannedItems(prev => prev.map(p => p.id === newItemId ? { ...p, imageUrl: `${AI_SCAN_URL}/api/photos/${upload.r2Key}`, imageData: undefined } : p))
         setItems(prev => prev.map(p => p.id === mainItemId ? { ...p, imageKey: upload.r2Key, imageData: undefined } : p))
       }
-    }).catch(() => {})
+    }).catch(() => { setUploading(false); setUploadError('Network error — check your connection') })
 
     const newItem: ScannedItem = {
       id: newItemId, name: name || 'Unknown Item', category, location: 'Unsorted',
@@ -1070,12 +1097,15 @@ export default function App() {
     } else if (imageData) {
       /* Local base64 — apply immediately; upgrade to R2 in background if worker is up */
       setItems(prev => prev.map(i => i.id === targetItemId ? { ...i, imageData } : i))
+      setUploading(true); setUploadError(null)
       uploadPhoto(imageData, 'Assigned Photo', 'Other', 'Scanned').then(upload => {
+        setUploading(false)
         if (upload) {
+          if (upload.error) { setUploadError(upload.error); return }
           setItems(prev => prev.map(i => i.id === targetItemId ? { ...i, imageKey: upload.r2Key, imageData: undefined } : i))
           setScannedItems(prev => prev.map(s => s.id === photoId ? { ...s, imageUrl: `${AI_SCAN_URL}/api/photos/${upload.r2Key}`, imageData: undefined } : s))
         }
-      }).catch(() => {})
+      }).catch(() => { setUploading(false); setUploadError('Network error — check your connection') })
     }
     setAssigningPhoto(null)
   }
@@ -1087,9 +1117,14 @@ export default function App() {
     } else if (imageData) {
       /* Local base64 — apply immediately; upgrade to R2 in background if worker is up */
       setItems(prev => prev.map(i => i.id === itemId ? { ...i, imageData } : i))
+      setUploading(true); setUploadError(null)
       uploadPhoto(imageData, 'Assigned Photo', 'Other', 'Scanned').then(upload => {
-        if (upload) setItems(prev => prev.map(i => i.id === itemId ? { ...i, imageKey: upload.r2Key, imageData: undefined } : i))
-      }).catch(() => {})
+        setUploading(false)
+        if (upload) {
+          if (upload.error) { setUploadError(upload.error); return }
+          setItems(prev => prev.map(i => i.id === itemId ? { ...i, imageKey: upload.r2Key, imageData: undefined } : i))
+        }
+      }).catch(() => { setUploading(false); setUploadError('Network error — check your connection') })
     }
     setPickForItem(null)
   }
@@ -1112,11 +1147,11 @@ export default function App() {
   }
 
   function closeScanner() {
-    stopScanCamera(); setScanMode('idle'); setCapturedImage(null); setScanResult(null); setShowCameraScan(false)
+    stopScanCamera(); setScanMode('idle'); setCapturedImage(null); setScanResult(null); setShowCameraScan(false); setUploading(false); setUploadError(null)
   }
 
   function retakePhoto() {
-    stopScanCamera(); setCapturedImage(null); setScanResult(null); setScanMode('camera')
+    stopScanCamera(); setCapturedImage(null); setScanResult(null); setScanMode('camera'); setUploadError(null)
     openScanCamera()
   }
 
@@ -1129,7 +1164,8 @@ export default function App() {
       let imageUrl = s.imageUrl as string | undefined
       if (s.image_b64 && !imageUrl) {
         const upload = await uploadPhoto(s.image_b64, s.item_name, s.suggested_category || 'Other', s.location || 'Scanned')
-        if (upload) imageUrl = `${AI_SCAN_URL}/api/photos/${upload.r2Key}`
+        if (upload?.error) console.warn('Legacy photo migration failed:', upload.error)
+        if (upload?.r2Key) imageUrl = `${AI_SCAN_URL}/api/photos/${upload.r2Key}`
       }
       return {
         id: s.id, name: s.item_name, category: s.suggested_category || 'Other',
@@ -1767,6 +1803,19 @@ export default function App() {
                       </div>
                     )}
                   </div>
+
+                  {uploading && (
+                    <div className="flex items-center gap-2 text-sm text-blue-500 mt-2">
+                      <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      Uploading photo...
+                    </div>
+                  )}
+                  {uploadError && (
+                    <div className="text-sm text-red-500 mt-2">{uploadError}</div>
+                  )}
 
                   <form onSubmit={e => {
                     e.preventDefault()
