@@ -18,7 +18,7 @@ interface ScannedItem {
 }
 
 /* ── AI Vision Scan — Cloudflare Worker ── */
-const AI_SCAN_URL = import.meta.env.VITE_AI_SCAN_URL || import.meta.env.VITE_AI_SEARCH_URL || ''
+const AI_SCAN_URL = import.meta.env.VITE_AI_SCAN_URL || ''
 
 interface VisionResult {
   itemName: string
