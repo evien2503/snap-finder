@@ -7,8 +7,5 @@
     "directory": "../dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application"
-  },
-  "d1_databases": [
-    { "binding": "SCAN_DB", "database_name": "item-scans", "database_id": "e9806d55-bdf3-4f4e-8676-34a42c092fd5" }
-  ]
+  }
 }

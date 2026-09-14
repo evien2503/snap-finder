@@ -70,14 +70,13 @@ async function visionScan(base64Image: string, roomName = 'Unknown', location = 
 
 async function fetchScanHistory(): Promise<any[]> {
   try {
-    const headers = await getAuthHeaders()
-    const res = await fetch(`${AI_SCAN_URL}/api/history`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...headers },
-    })
-    if (!res.ok) return []
-    const data = await res.json()
-    return data.scans ?? []
+    const { data, error } = await supabase
+      .from('scans')
+      .select('id, item_name, confidence, distinct_features, suggested_category, description, room_name, location, created_at')
+      .order('created_at', { ascending: false })
+      .limit(50)
+    if (error) { console.warn('Supabase scans query failed:', error.message); return [] }
+    return data ?? []
   } catch {
     return []
   }
@@ -90,6 +89,10 @@ async function uploadPhoto(
   category: string,
   roomLocation: string
 ): Promise<{ id: string; r2Key: string; error?: string } | null> {
+  /* Skip R2 upload if no Supabase JWT (password auth users) — keep base64 locally */
+  const hasAuth = await hasSupabaseJwt()
+  if (!hasAuth) return null
+
   try {
     /* Convert base64 → Blob → File for FormData */
     const blobResp = await fetch(base64Image)
@@ -104,9 +107,6 @@ async function uploadPhoto(
 
     const form = new FormData()
     form.append('image', file)
-    form.append('itemName', itemName)
-    form.append('category', category)
-    form.append('roomLocation', roomLocation)
 
     const authHeaders = await getAuthHeaders()
 
@@ -127,7 +127,23 @@ async function uploadPhoto(
       const msg = res ? `Upload failed (${res.status})` : 'Upload failed'
       return { id: '', r2Key: '', error: msg }
     }
-    return await res.json()
+    const result = await res.json()
+
+    /* Insert photo metadata into Supabase */
+    const { error: insertError } = await supabase
+      .from('photos')
+      .insert({
+        id: result.id,
+        r2_key: result.r2Key,
+        item_name: itemName,
+        category: category,
+        room_location: roomLocation,
+      })
+    if (insertError) {
+      console.warn('Supabase photo metadata insert failed:', insertError.message)
+    }
+
+    return result
   } catch {
     return { id: '', r2Key: '', error: 'Unexpected upload error' }
   }
@@ -135,13 +151,27 @@ async function uploadPhoto(
 
 async function fetchPhotos(): Promise<{ categories: Record<string, any[]>; total: number }> {
   try {
-    const authHeaders = await getAuthHeaders()
-    const res = await fetch(`${AI_SCAN_URL}/api/photos`, { headers: authHeaders })
-    if (!res.ok) return { categories: {}, total: 0 }
-    return await res.json()
+    const { data, error } = await supabase
+      .from('photos')
+      .select('id, r2_key, item_name, category, room_location, created_at')
+      .order('created_at', { ascending: false })
+    if (error) { console.warn('Supabase photos query failed:', error.message); return { categories: {}, total: 0 } }
+    const rows = data ?? []
+    /* Group by category */
+    const categorized: Record<string, any[]> = {}
+    for (const row of rows) {
+      const cat = row.category || 'Other'
+      if (!categorized[cat]) categorized[cat] = []
+      categorized[cat].push(row)
+    }
+    return { categories: categorized, total: rows.length }
   } catch {
     return { categories: {}, total: 0 }
   }
+}
+
+function getPhotoOwner(r2Key: string, allItems: Item[]): Item | undefined {
+  return allItems.find(i => i.imageKey === r2Key)
 }
 
 interface ChatAction { type: 'move_room' | 'assign_zone' | 'unassign' | 'move_and_assign'; itemId: string; label: string; roomId?: string; zoneId?: string }
@@ -367,10 +397,36 @@ const QUICK_CHIPS = [
 
 function storageKey(user: string) { return `ilf_data_${user}` }
 
+/* ── Local password auth (no Supabase) ── */
+interface LocalUser { email: string; password: string }
+async function hashPass(pw: string): Promise<string> {
+  const encoder = new TextEncoder()
+  const data = encoder.encode(pw)
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data)
+  const hashArray = Array.from(new Uint8Array(hashBuffer))
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+}
+function getLocalUsers(): LocalUser[] { return JSON.parse(localStorage.getItem('ilf_users') || '[]') }
+function saveLocalUsers(users: LocalUser[]) { localStorage.setItem('ilf_users', JSON.stringify(users)) }
+
 async function getAuthHeaders(): Promise<Record<string, string>> {
-  const { data } = await supabase.auth.getSession()
-  const token = data.session?.access_token
-  return token ? { 'Authorization': `Bearer ${token}` } : {}
+  try {
+    const { data } = await supabase.auth.getSession()
+    const token = data.session?.access_token
+    return token ? { 'Authorization': `Bearer ${token}` } : {}
+  } catch {
+    return {}
+  }
+}
+
+/** Check if user is authenticated via Supabase (has a valid JWT) */
+async function hasSupabaseJwt(): Promise<boolean> {
+  try {
+    const { data } = await supabase.auth.getSession()
+    return !!data.session?.access_token
+  } catch {
+    return false
+  }
 }
 
 function isValidDate(value: unknown): value is string {
@@ -687,6 +743,11 @@ export default function App() {
   const [photosFromServer, setPhotosFromServer] = useState<Record<string, any[]> | null>(null)
   const [photosLoading, setPhotosLoading] = useState(false)
   const [assigningPhoto, setAssigningPhoto] = useState<{ id: string; r2Key?: string; imageData?: string } | null>(null)
+  const [photoConflict, setPhotoConflict] = useState<{
+    photoR2Key: string
+    existingItem: Item
+    targetItemId: string
+  } | null>(null)
   const [assignSearch, setAssignSearch] = useState('')
   const [pickForItem, setPickForItem] = useState<Item | null>(null)
   const [pickSearch, setPickSearch] = useState('')
@@ -708,8 +769,11 @@ export default function App() {
   const [promptPlaceholder, setPromptPlaceholder] = useState('')
   const [promptCallback, setPromptCallback] = useState<((v: string | null) => void) | null>(null)
   const [authEmail, setAuthEmail] = useState('')
+  const [authPassword, setAuthPassword] = useState('')
+  const [authMode, setAuthMode] = useState<'otp' | 'password'>('password')
   const [otpSent, setOtpSent] = useState(false)
   const [otpCode, setOtpCode] = useState('')
+  const [isSignUp, setIsSignUp] = useState(false)
 
   const [searchFocused, setSearchFocused] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
@@ -762,7 +826,15 @@ export default function App() {
   /* ── Data persistence ── */
   function save() {
     if (!user) return
-    localStorage.setItem(storageKey(user.id), JSON.stringify({ rooms, items, currentRoomId, scannedItems }))
+    try {
+      localStorage.setItem(storageKey(user.id), JSON.stringify({ rooms, items, currentRoomId, scannedItems }))
+    } catch (e) {
+      /* localStorage full — try saving without imageData (large base64 photos) */
+      const stripped = items.map(({ imageData, ...rest }) => rest)
+      try {
+        localStorage.setItem(storageKey(user.id), JSON.stringify({ rooms, items: stripped, currentRoomId, scannedItems }))
+      } catch { /* give up */ }
+    }
   }
 
   useEffect(() => { if (user) save() }, [rooms, items, currentRoomId, scannedItems])
@@ -788,14 +860,7 @@ export default function App() {
   function loadData(u: User) {
     const raw = localStorage.getItem(storageKey(u.id))
     if (!raw) {
-      if (!localStorage.getItem('ilf_onboarded')) {
-        setRooms(JSON.parse(JSON.stringify(DEFAULT_ROOMS)))
-        setItems([])
-        setCurrentRoomId(DEFAULT_ROOMS[0].id)
-        setShowOnboarding(true)
-        setOnboardingStep(1)
-        return
-      }
+      /* First time user — set up default rooms, show onboarding if not completed */
       const rms = JSON.parse(JSON.stringify(DEFAULT_ROOMS))
       const its = SAMPLE_ITEMS.map(s => ({
         id: crypto.randomUUID(), name: s.name, location: s.location, category: s.category,
@@ -803,6 +868,7 @@ export default function App() {
         zoneX: s.zoneX, zoneY: s.zoneY,
       }))
       setRooms(rms); setItems(its); setCurrentRoomId(rms[0].id)
+      if (!localStorage.getItem('ilf_onboarded')) setShowOnboarding(true)
       return
     }
     try {
@@ -849,11 +915,50 @@ export default function App() {
     }
   }
 
+  async function signUpWithPassword() {
+    if (!authEmail.trim()) { setAuthError('Enter your email'); return }
+    if (!authPassword.trim()) { setAuthError('Enter a password'); return }
+    if (authPassword.length < 6) { setAuthError('Password must be at least 6 characters'); return }
+    setAuthError('')
+    const users = getLocalUsers()
+    if (users.find(u => u.email === authEmail)) { setAuthError('Email already registered'); return }
+    const hp = await hashPass(authPassword)
+    users.push({ email: authEmail, password: hp })
+    saveLocalUsers(users)
+    const u: User = { id: authEmail, email: authEmail }
+    setUser(u); userRef.current = u.id
+    loadData(u)
+    setAuthError(''); setPage('dashboard')
+  }
+
+  async function signInWithPassword() {
+    if (!authEmail.trim()) { setAuthError('Enter your email'); return }
+    if (!authPassword.trim()) { setAuthError('Enter your password'); return }
+    setAuthError('')
+    const users = getLocalUsers()
+    const hp = await hashPass(authPassword)
+    let u = users.find(us => us.email === authEmail && us.password === hp)
+    if (!u) {
+      /* Legacy plain-text password migration */
+      const legacy = users.find(us => us.email === authEmail && us.password === authPassword)
+      if (legacy) {
+        legacy.password = hp
+        saveLocalUsers(users)
+        u = legacy
+      }
+    }
+    if (!u) { setAuthError('Invalid email or password'); return }
+    const userObj: User = { id: u.email, email: u.email }
+    setUser(userObj); userRef.current = userObj.id
+    loadData(userObj)
+    setAuthError(''); setPage('dashboard')
+  }
+
   function signOut() {
     stopScanCamera()
-    supabase.auth.signOut()
+    supabase.auth.signOut() // clear Supabase session if OTP was used
     setUser(null); setItems([]); setRooms([]); setScannedItems([]); setAuthError(''); setShowOnboarding(false); setPage('auth')
-    setOtpSent(false); setOtpCode('')
+    setOtpSent(false); setOtpCode(''); setAuthPassword('')
   }
 
   /* ── Room & Item CRUD ── */
@@ -1091,6 +1196,12 @@ export default function App() {
 
   function assignPhotoToItem(photoId: string, r2Key: string | undefined, imageData: string | undefined, targetItemId: string) {
     if (r2Key) {
+      const owner = getPhotoOwner(r2Key, items)
+      if (owner && owner.id !== targetItemId) {
+        setPhotoConflict({ photoR2Key: r2Key, existingItem: owner, targetItemId })
+        setAssigningPhoto(null)
+        return
+      }
       /* Already has R2 key — assign directly */
       setItems(prev => prev.map(i => i.id === targetItemId ? { ...i, imageKey: r2Key, imageData: undefined } : i))
       setScannedItems(prev => prev.map(s => s.id === photoId ? { ...s, imageUrl: `${AI_SCAN_URL}/api/photos/${r2Key}`, imageData: undefined } : s))
@@ -1112,6 +1223,11 @@ export default function App() {
 
   function attachPhotoToItem(itemId: string, r2Key?: string, imageData?: string) {
     if (r2Key) {
+      const owner = getPhotoOwner(r2Key, items)
+      if (owner && owner.id !== itemId) {
+        setPhotoConflict({ photoR2Key: r2Key, existingItem: owner, targetItemId: itemId })
+        return
+      }
       /* Already has R2 key — assign directly */
       setItems(prev => prev.map(i => i.id === itemId ? { ...i, imageKey: r2Key, imageData: undefined } : i))
     } else if (imageData) {
@@ -1127,6 +1243,23 @@ export default function App() {
       }).catch(() => { setUploading(false); setUploadError('Network error — check your connection') })
     }
     setPickForItem(null)
+  }
+
+  function resolvePhotoConflict(action: 'move' | 'cancel') {
+    if (!photoConflict) return
+    if (action === 'move') {
+      setItems(prev => prev.map(i =>
+        i.imageKey === photoConflict.photoR2Key
+          ? { ...i, imageKey: undefined, imageData: undefined }
+          : i
+      ))
+      setItems(prev => prev.map(i =>
+        i.id === photoConflict.targetItemId
+          ? { ...i, imageKey: photoConflict.photoR2Key, imageData: undefined }
+          : i
+      ))
+    }
+    setPhotoConflict(null)
   }
 
   function removeItemPhoto(itemId: string) {
@@ -1323,7 +1456,42 @@ export default function App() {
             <h1 className="text-2xl font-bold bg-gradient-to-r from-[#3b82f6] to-[#2563eb] bg-clip-text text-transparent mb-1">📍 Item Location Finder</h1>
             <p className="text-gray-500 dark:text-gray-400 text-sm">Never lose track of your important items</p>
           </div>
-          {!otpSent ? (
+          {/* Auth mode toggle */}
+          <div className="flex bg-gray-100 dark:bg-gray-700 rounded-lg p-1 mb-4">
+            <button type="button" onClick={() => { setAuthMode('password'); setOtpSent(false); setAuthError('') }}
+              className={`flex-1 py-2 text-sm font-medium rounded-md transition-all cursor-pointer ${authMode === 'password' ? 'bg-white dark:bg-gray-600 text-gray-900 dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400'}`}>
+              Password
+            </button>
+            <button type="button" onClick={() => { setAuthMode('otp'); setAuthError('') }}
+              className={`flex-1 py-2 text-sm font-medium rounded-md transition-all cursor-pointer ${authMode === 'otp' ? 'bg-white dark:bg-gray-600 text-gray-900 dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400'}`}>
+              OTP Code
+            </button>
+          </div>
+
+          {authMode === 'password' ? (
+            /* ── Password auth ── */
+            <form onSubmit={e => { e.preventDefault(); isSignUp ? signUpWithPassword() : signInWithPassword() }} className="flex flex-col gap-4">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-gray-700 dark:text-gray-200">Email</label>
+                <input type="email" placeholder="you@example.com" value={authEmail} onChange={e => setAuthEmail(e.target.value)}
+                  className="px-4 py-3 border border-gray-200 dark:border-gray-600 rounded-lg text-sm outline-none focus:border-blue-500 focus:ring-3 focus:ring-blue-500/40 bg-white dark:bg-gray-700 dark:text-gray-100 transition-colors" required />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-gray-700 dark:text-gray-200">Password</label>
+                <input type="password" placeholder="Min 6 characters" value={authPassword} onChange={e => setAuthPassword(e.target.value)}
+                  className="px-4 py-3 border border-gray-200 dark:border-gray-600 rounded-lg text-sm outline-none focus:border-blue-500 focus:ring-3 focus:ring-blue-500/40 bg-white dark:bg-gray-700 dark:text-gray-100 transition-colors" required minLength={6} />
+              </div>
+              {authError && <p role="alert" className="text-red-500 dark:text-red-400 text-sm text-center bg-red-50 dark:bg-red-900/30 py-2 px-3 rounded-md">{authError}</p>}
+              <button type="submit" className="w-full py-3 bg-blue-500 hover:bg-blue-600 text-white font-semibold rounded-lg transition-all hover:-translate-y-0.5 hover:shadow-md active:translate-y-0 cursor-pointer touch-manipulation">
+                {isSignUp ? 'Create Account' : 'Sign In'}
+              </button>
+              <button type="button" onClick={() => { setIsSignUp(!isSignUp); setAuthError('') }}
+                className="text-sm text-blue-500 hover:opacity-80 transition-opacity cursor-pointer text-center">
+                {isSignUp ? 'Already have an account? Sign in' : "Don't have an account? Sign up"}
+              </button>
+            </form>
+          ) : !otpSent ? (
+            /* ── OTP: send code ── */
             <form onSubmit={e => { e.preventDefault(); sendOtp() }} className="flex flex-col gap-4">
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-semibold text-gray-700 dark:text-gray-200">Email</label>
@@ -1336,6 +1504,7 @@ export default function App() {
               </button>
             </form>
           ) : (
+            /* ── OTP: verify code ── */
             <form onSubmit={e => { e.preventDefault(); verifyOtp() }} className="flex flex-col gap-4">
               <p className="text-sm text-gray-500 dark:text-gray-400 text-center">
                 Code sent to <span className="font-semibold text-gray-700 dark:text-gray-200">{authEmail}</span>
@@ -1403,6 +1572,18 @@ export default function App() {
     )
   }
 
+  /* Guard: show loading if rooms haven't loaded yet */
+  if (rooms.length === 0) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-[#3b82f6] via-[#2563eb] to-[#60a5fa]">
+        <div className="text-white text-center">
+          <div className="w-10 h-10 border-3 border-white border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+          <p className="text-sm font-medium">Loading...</p>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen">
       <div className="bg-gray-50 dark:bg-[#0f172a] text-gray-900 dark:text-gray-100 transition-colors min-h-screen" style={{ fontFamily: '-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif' }}>
@@ -1454,7 +1635,7 @@ export default function App() {
             )}
 
             {/* Search Bar */}
-            <div className="relative mb-1" ref={el => { if (el) { /* container ref for dropdown positioning */ } }}>
+            <div className="relative mb-1">
               <input ref={searchRef} type="text" placeholder={`Search in ${room.name}...`} value={searchQuery}
                 onChange={e => { setSearchQuery(e.target.value); if (e.target.value) handleSearch(e.target.value); else { setGlowingItemId(null); setGlowingZoneId(null); setGlowingRoomIds([]); setSearchLocalResults([]) } }}
                 onKeyDown={e => {
@@ -2155,6 +2336,14 @@ export default function App() {
                           className={`rounded-xl overflow-hidden cursor-pointer border-2 transition-all duration-200 hover:scale-[1.03] hover:shadow-lg hover:shadow-blue-500/20 text-left ${isSelected ? 'border-indigo-500 ring-2 ring-indigo-500/50' : 'border-slate-700 hover:border-blue-500/50'}`}>
                           <div className="aspect-square bg-slate-700 relative overflow-hidden">
                             <img src={src} alt={s.name} className="w-full h-full object-cover" />
+                            {(() => {
+                              const r2k = s.imageUrl ? s.imageUrl.split('/api/photos/')[1] : undefined
+                              const owner = r2k ? getPhotoOwner(r2k, items) : undefined
+                              if (owner && owner.id !== pickForItem?.id) {
+                                return <span className="absolute top-1.5 left-1.5 text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/90 text-white font-semibold z-10">Used by {owner.name}</span>
+                              }
+                              return null
+                            })()}
                             {isSelected && (
                               <div className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-indigo-500 flex items-center justify-center shadow-lg">
                                 <span className="text-white text-[11px] font-bold">✓</span>
@@ -2184,6 +2373,13 @@ export default function App() {
                             className={`rounded-xl overflow-hidden cursor-pointer border-2 transition-all duration-200 hover:scale-[1.03] hover:shadow-lg hover:shadow-blue-500/20 text-left ${isSelected ? 'border-indigo-500 ring-2 ring-indigo-500/50' : 'border-slate-700 hover:border-blue-500/50'}`}>
                             <div className="aspect-square bg-slate-700 relative overflow-hidden">
                               <img src={url} alt={p.item_name || 'Photo'} className="w-full h-full object-cover" />
+                              {(() => {
+                                const owner = getPhotoOwner(p.r2_key, items)
+                                if (owner && owner.id !== pickForItem?.id) {
+                                  return <span className="absolute top-1.5 left-1.5 text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/90 text-white font-semibold z-10">Used by {owner.name}</span>
+                                }
+                                return null
+                              })()}
                               {isSelected && (
                                 <div className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-indigo-500 flex items-center justify-center shadow-lg">
                                   <span className="text-white text-[11px] font-bold">✓</span>
@@ -2308,6 +2504,26 @@ export default function App() {
                   {editingItem ? 'Save Changes' : 'Save Item'}
                 </button>
               </form>
+            </div>
+          </div>
+        )}
+
+        {photoConflict && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setPhotoConflict(null)}>
+            <div className="bg-slate-800 rounded-2xl p-6 max-w-sm w-full mx-4 shadow-2xl border border-slate-600" onClick={e => e.stopPropagation()}>
+              <h3 className="text-white font-bold text-lg mb-2">Photo Already In Use</h3>
+              <p className="text-slate-300 text-sm mb-1">
+                This photo is already assigned to <span className="font-semibold text-white">{photoConflict.existingItem.name}</span>.
+              </p>
+              <p className="text-slate-400 text-sm mb-5">
+                Move it to <span className="font-semibold text-white">{items.find(i => i.id === photoConflict.targetItemId)?.name || 'this item'}</span>?
+              </p>
+              <div className="flex gap-3">
+                <button onClick={() => resolvePhotoConflict('cancel')}
+                  className="flex-1 px-4 py-2.5 rounded-xl bg-slate-700 hover:bg-slate-600 text-white font-medium transition-colors">Cancel</button>
+                <button onClick={() => resolvePhotoConflict('move')}
+                  className="flex-1 px-4 py-2.5 rounded-xl bg-blue-500 hover:bg-blue-600 text-white font-medium transition-colors">Move Photo</button>
+              </div>
             </div>
           </div>
         )}

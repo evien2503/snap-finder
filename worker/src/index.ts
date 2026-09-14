@@ -2,11 +2,10 @@
  * Item Location Finder — Cloudflare Worker
  *
  * - POST /api/photos/upload : Upload photo to R2 (max 10 MB, images only)
- * - GET  /api/photos        : List photos by user (paginated: ?limit=&offset=)
  * - GET  /api/photos/:key   : Serve photo from R2
- * - POST /api/history       : Scan history from D1
  *
  * All /api/* routes require a valid Supabase JWT (Bearer token).
+ * Scan history and photo metadata are stored in Supabase (D1 removed).
  *
  * Deploy:
  *   npm create cloudflare -- worker
@@ -18,7 +17,6 @@ import { verifySupabaseJwt, extractBearerToken } from './auth'
 
 export interface Env {
   BUCKET?: R2Bucket
-  SCAN_DB: D1Database
   ASSETS: Fetcher
   SUPABASE_JWT_SECRET: string
 }
@@ -61,14 +59,14 @@ export default {
     try {
       /* ── API routes (require auth) ── */
       if (path.startsWith('/api/')) {
-        // Auth check for all API routes except OPTIONS
         const authResult = await authenticate(request, env)
         if (authResult instanceof Response) return authResult
         const userId = authResult
 
-        /* Photo endpoints */
+        /* Photo upload */
         if (path === '/api/photos/upload' && request.method === 'POST') return handlePhotoUpload(request, env, userId)
-        if (path === '/api/photos' && request.method === 'GET') return handleListPhotos(request, env, userId)
+
+        /* Serve photo from R2 */
         if (path.startsWith('/api/photos/') && request.method === 'GET') {
           const key = path.slice('/api/photos/'.length)
           if (key.includes('..') || key.includes('\\')) {
@@ -78,9 +76,6 @@ export default {
           return new Response(JSON.stringify({ error: 'Missing key' }), { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } })
         }
 
-        /* POST endpoints */
-        if (request.method !== 'POST') return new Response(JSON.stringify({ error: 'POST only' }), { status: 405, headers: { ...CORS, 'Content-Type': 'application/json' } })
-        if (path === '/api/history') return handleHistory(request, env, userId)
         return new Response(JSON.stringify({ error: 'Unknown route' }), { status: 404, headers: { ...CORS, 'Content-Type': 'application/json' } })
       }
 
@@ -93,20 +88,7 @@ export default {
 }
 
 /* ════════════════════════════════════════════════════
-   1.  SCAN HISTORY  —  POST /api/history
-   ════════════════════════════════════════════════════ */
-async function handleHistory(request: Request, env: Env, userId: string): Promise<Response> {
-  const { results } = await env.SCAN_DB.prepare(
-    'SELECT id, item_name, confidence, distinct_features, suggested_category, description, room_name, location, created_at FROM scans WHERE user_id = ?1 ORDER BY created_at DESC LIMIT 50'
-  ).bind(userId).all()
-
-  return new Response(JSON.stringify({ scans: results ?? [] }), {
-    headers: { ...CORS, 'Content-Type': 'application/json' },
-  })
-}
-
-/* ════════════════════════════════════════════════════
-   2.  PHOTO UPLOAD  —  POST /api/photos/upload
+   1.  PHOTO UPLOAD  —  POST /api/photos/upload
    ════════════════════════════════════════════════════ */
 async function handlePhotoUpload(request: Request, env: Env, userId: string): Promise<Response> {
   if (!env.BUCKET) {
@@ -128,10 +110,6 @@ async function handlePhotoUpload(request: Request, env: Env, userId: string): Pr
     return new Response(JSON.stringify({ error: 'Only image files are allowed' }), { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } })
   }
 
-  const itemName = (form.get('itemName') as string) || 'Unknown Item'
-  const category = (form.get('category') as string) || 'Other'
-  const roomLocation = (form.get('roomLocation') as string) || 'Scanned'
-
   const ext = (file.name.match(/\.(\w+)$/)?.[1]) || 'jpg'
   const id = crypto.randomUUID()
   const r2Key = `${userId}/${Date.now()}_${id.slice(0, 8)}.${ext}`
@@ -139,7 +117,6 @@ async function handlePhotoUpload(request: Request, env: Env, userId: string): Pr
   const buffer = await file.arrayBuffer()
   const r2PutResult = await env.BUCKET.put(r2Key, buffer, {
     httpMetadata: { contentType: file.type || 'image/jpeg' },
-    customMetadata: { itemName, category, roomLocation },
   }).catch(err => {
     console.error('R2 put failed:', err)
     return null
@@ -149,56 +126,14 @@ async function handlePhotoUpload(request: Request, env: Env, userId: string): Pr
     return new Response(JSON.stringify({ error: 'Failed to save photo to storage' }), { status: 500, headers: { ...CORS, 'Content-Type': 'application/json' } })
   }
 
-  /* Persist metadata to D1 — if this fails, clean up R2 */
-  try {
-    await env.SCAN_DB.prepare(
-      `INSERT INTO photos (id, user_id, r2_key, item_name, category, room_location, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
-    ).bind(id, userId, r2Key, itemName, category, roomLocation, new Date().toISOString()).run()
-  } catch (err) {
-    console.error('D1 insert failed, rolling back R2:', err)
-    await env.BUCKET.delete(r2Key).catch(() => {})
-    return new Response(JSON.stringify({ error: 'Failed to save photo metadata' }), { status: 500, headers: { ...CORS, 'Content-Type': 'application/json' } })
-  }
-
-  return new Response(JSON.stringify({ id, r2Key, itemName, category }), {
+  /* Return r2Key — frontend handles metadata insert into Supabase */
+  return new Response(JSON.stringify({ id, r2Key }), {
     headers: { ...CORS, 'Content-Type': 'application/json' },
   })
 }
 
 /* ════════════════════════════════════════════════════
-   3.  LIST PHOTOS  —  GET /api/photos
-   ════════════════════════════════════════════════════ */
-async function handleListPhotos(request: Request, env: Env, userId: string): Promise<Response> {
-  const url = new URL(request.url)
-  const limit = Math.min(parseInt(url.searchParams.get('limit') || '50'), 100)
-  const offset = parseInt(url.searchParams.get('offset') || '0')
-
-  const { results } = await env.SCAN_DB.prepare(
-    'SELECT id, r2_key, item_name, category, room_location, created_at FROM photos WHERE user_id = ?1 ORDER BY created_at DESC LIMIT ?2 OFFSET ?3'
-  ).bind(userId, limit, offset).all()
-
-  const { results: countResult } = await env.SCAN_DB.prepare(
-    'SELECT COUNT(*) as total FROM photos WHERE user_id = ?1'
-  ).bind(userId).all()
-
-  const total = (countResult as any[])?.[0]?.total ?? 0
-
-  /* Group by category */
-  const categorized: Record<string, any[]> = {}
-  for (const row of (results as any[])) {
-    const cat = row.category || 'Other'
-    if (!categorized[cat]) categorized[cat] = []
-    categorized[cat].push(row)
-  }
-
-  return new Response(JSON.stringify({ categories: categorized, total, limit, offset }), {
-    headers: { ...CORS, 'Content-Type': 'application/json' },
-  })
-}
-
-/* ════════════════════════════════════════════════════
-   4.  SERVE PHOTO  —  GET /api/photos/<r2_key>
+   2.  SERVE PHOTO  —  GET /api/photos/<r2_key>
    ════════════════════════════════════════════════════ */
 async function handleServePhoto(key: string, env: Env): Promise<Response> {
   if (!env.BUCKET) {
